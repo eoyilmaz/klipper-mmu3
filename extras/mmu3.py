@@ -8,16 +8,26 @@ from typing import TYPE_CHECKING, Callable
 from extras.manual_stepper import ManualStepper
 
 if TYPE_CHECKING:
+    import sys
+
+    if sys.version_info >= (3, 11):
+        from typing import Self
+    else:
+        from typing_extensions import Self
+
+    from types import TracebackType
+
     from configfile import ConfigWrapper
     from extras.display_status import DisplayStatus
-    from extras.filament_switch_sensor import SwitchSensor
     from extras.filament_motion_sensor import EncoderSensor
+    from extras.filament_switch_sensor import SwitchSensor
     from extras.heaters import Heater, PrinterHeaters
     from extras.query_endstops import QueryEndstops
     from gcode import GCodeCommand, GCodeDispatch
     from kinematics.extruder import PrinterExtruder
     from klippy import Printer
     from mcu import MCU_endstop
+    from reactor import Reactor
     from toolhead import ToolHead
 
 
@@ -49,6 +59,137 @@ def gcmd_grabber(f: Callable) -> Callable:
         return result
 
     return wrapped_f
+
+
+class FilamentSwitchSensorManager:
+    """This is a context manager to safely enable/disable filament switch sensors.
+
+    Args:
+        filament_switch_sensor (SwitchSensor): The filament switch sensor.
+        state (bool): The desired state of the sensor inside the context.
+    """
+
+    def __init__(
+        self,
+        filament_switch_sensor: SwitchSensor,
+        desired_state: bool = False,
+        respond_info: None | Callable = None,
+    ) -> None:
+        self.filament_switch_sensor = filament_switch_sensor
+        self.initial_state = None
+        self.desired_state = desired_state
+        if respond_info is None:
+            respond_info = print
+        self.respond_info = respond_info
+
+    def __enter__(self) -> Self:
+        """Enter to the context."""
+        if self.filament_switch_sensor:
+            # store the state
+            self.initial_state = (
+                self.filament_switch_sensor.runout_helper.sensor_enabled
+            )
+            self.respond_info(
+                "{} filament runout sensor!".format(
+                    "Enabling" if self.desired_state else "Disabling"
+                )
+            )
+            # set the desired state
+            self.filament_switch_sensor.runout_helper.sensor_enabled = (
+                self.desired_state
+            )
+        return self
+
+    def __exit__(
+        self,
+        exc_type: None | type[BaseException],
+        exc_value: None | BaseException,
+        tb: None | TracebackType,
+    ) -> None:
+        """Exit the context.
+
+        Ignore the exceptions, if any, Klipper will handle it.
+        """
+        if not self.filament_switch_sensor:
+            return
+
+        # restore the initial state
+        self.respond_info(
+            "Re-{} filament runout sensor!".format(
+                "Enabling" if self.initial_state else "Disabling"
+            )
+        )
+        self.filament_switch_sensor.runout_helper.sensor_enabled = self.initial_state
+        return
+
+
+class FilamentMotionSensorManager:
+    """This is a context manager to safely enable/disable filament motion sensors.
+
+    Args:
+        filament_motion_sensor (EncoderSensor): The filament motion sensor.
+        state (bool): The desired state of the sensor inside the context.
+    """
+
+    def __init__(
+        self,
+        filament_motion_sensor: SwitchSensor,
+        desired_state: bool = False,
+        respond_info: None | Callable = None,
+        reactor: None | "Reactor" = None,  # noqa: UP037
+        toolhead: None | ToolHead = None,
+    ) -> None:
+        self.filament_motion_sensor = filament_motion_sensor
+        self.initial_state = None
+        self.desired_state = desired_state
+        if respond_info is None:
+            respond_info = print
+        self.respond_info = respond_info
+        self.reactor = reactor
+        self.toolhead = toolhead
+
+    def __enter__(self) -> Self:
+        """Enter to the context."""
+        if self.filament_motion_sensor:
+            # store the state
+            self.initial_state = (
+                self.filament_motion_sensor.runout_helper.sensor_enabled
+            )
+            self.respond_info(
+                "{} filament motion sensor!".format(
+                    "Enabling" if self.desired_state else "Disabling"
+                )
+            )
+            # set the desired state
+            self.filament_motion_sensor.runout_helper.sensor_enabled = (
+                self.desired_state
+            )
+        return self
+
+    def __exit__(
+        self,
+        exc_type: None | type[BaseException],
+        exc_value: None | BaseException,
+        tb: None | TracebackType,
+    ) -> None:
+        """Exit the context.
+
+        Ignore the exceptions, if any, Klipper will handle it.
+        """
+        if not self.filament_motion_sensor:
+            return
+
+        # restore the initial state
+        self.respond_info(
+            "Re-{} filament motion sensor!".format(
+                "Enabling" if self.initial_state else "Disabling"
+            )
+        )
+        # also update the event time so that the runout doesn't trigger
+        event_time = self.reactor.monotonic() or self.toolhead.get_last_move_time()
+        self.filament_motion_sensor.encoder_event(event_time, None)
+        self.filament_motion_sensor.runout_helper.sensor_enabled = self.initial_state
+        return
 
 
 class MMU3:
@@ -103,6 +244,7 @@ class MMU3:
         # bowden load
         self.bowden_load_length1 = config.getint("bowden_load_length1", 450)
         self.bowden_load_length2 = config.getint("bowden_load_length2", 20)
+        self.bowden_load_length3 = config.getint("bowden_load_length3", 20)
         self.bowden_load_speed1 = config.getint("bowden_load_speed1", 120)
         self.bowden_load_speed2 = config.getint("bowden_load_speed2", 60)
         self.bowden_load_accel1 = config.getint("bowden_load_accel1", 80)
@@ -120,10 +262,13 @@ class MMU3:
         self.finda_unload_speed = config.getint("finda_unload_speed", 20)
         self.finda_load_accel = config.getint("finda_load_accel", 50)
         self.finda_unload_accel = config.getint("finda_unload_accel", 50)
-        # cut length
+        # cut in mmu3
         self.cut_filament_length = config.getfloat("cut_filament_length", 20)
         self.cutting_edge_retract = config.getfloat("cutting_edge_retract", 5)
         self.cut_stepper_current = config.getfloat("cut_stepper_current", 1.0)
+        # cut in extruder
+        self.enable_filament_cutter = config.getboolean("enable_filament_cutter", False)
+        self.cut_load_length = config.getfloat("cut_load_length", 0)
         # selector
         self.selector_speed = config.getfloat("selector_speed", 35)
         self.selector_homing_speed = config.getfloat("selector_homing_speed", 20)
@@ -141,7 +286,7 @@ class MMU3:
         ]
         self.idler_home_position = config.getfloat("idler_home_position", 85)
         self.idler_load_to_extruder_speed = config.getint(
-            "idler_load_to_extruder_speed", 30
+            "idler_load_to_extruder_speed", 10
         )
         self.idler_unload_speed = config.getint("idler_unload_speed", 30)
         # pause values
@@ -576,13 +721,16 @@ class MMU3:
             bool: True, if homed, False otherwise.
         """
         self.respond_debug("Start of home_mmu")
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
 
         filament_switch_sensor_state = None
-        if self.filament_switch_sensor and self.filament_switch_sensor.runout_helper.sensor_enabled:
+        if (
+            self.filament_switch_sensor
+            and self.filament_switch_sensor.runout_helper.sensor_enabled
+        ):
             self.respond_info("Disabling filament runout sensor!")
-            filament_switch_sensor_state = self.filament_switch_sensor.runout_helper.sensor_enabled
+            filament_switch_sensor_state = (
+                self.filament_switch_sensor.runout_helper.sensor_enabled
+            )
             self.filament_switch_sensor.runout_helper.sensor_enabled = False
 
         self.is_homed = True
@@ -591,16 +739,14 @@ class MMU3:
             return False
 
         self.respond_debug("Before home_mmu_only inside home_mmu")
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         home_mmu_only_result = self.home_mmu_only()
         self.respond_debug("After home_mmu_only inside home_mmu")
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
 
         if filament_switch_sensor_state is not None:
             self.respond_info("Re-Enabling filament runout sensor!")
-            self.filament_switch_sensor.runout_helper.sensor_enabled = filament_switch_sensor_state
+            self.filament_switch_sensor.runout_helper.sensor_enabled = (
+                filament_switch_sensor_state
+            )
 
         return home_mmu_only_result
 
@@ -709,7 +855,7 @@ class MMU3:
             M118 Start PAUSE
             PAUSE
             G90
-            G1 X{self.pause_position[0]} Y{self.pause_position[1]} F3000
+            ;G1 X{self.pause_position[0]} Y{self.pause_position[1]} F3000
             M300
             M300
             M300
@@ -717,10 +863,12 @@ class MMU3:
 
     def resume(self) -> None:
         """Resume the MMU."""
+        self.is_paused = False
         self.gcode.run_script_from_command(
             """
             M118 End PAUSE
             RESTORE_GCODE_STATE NAME=PAUSE_MMU_state
+            RESUME
             """
         )
 
@@ -769,9 +917,6 @@ class MMU3:
             self.disable_steppers(self.selector_stepper)
         self.current_tool = tool_id
         # self.current_filament = None  # tool_id
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
-
         self.respond_info(f"Tool {tool_id} Enabled")
         return True
 
@@ -799,10 +944,6 @@ class MMU3:
         )
         self.current_tool = None
         self.disable_steppers(self.idler_stepper)
-
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
-
         self.display_status_msg("Unselect Tool is complete!")
         return True
 
@@ -820,38 +961,34 @@ class MMU3:
             return True
 
         self.display_status_msg("Retry loading ...")
-        print_time = self.toolhead.get_last_move_time()
         if self.is_paused:
             self.display_status_msg("Printer is paused ...")
             return False
 
+        print_time = self.toolhead.get_last_move_time()
         if self.extruder_heater.get_temp(print_time)[0] < self.min_temp_extruder:
             self.display_status_msg("Hotend is not hot enough ...")
             return False
 
         self.display_status_msg("Loading Filament...")
-        self.gcode.run_script_from_command("G91")
         self.select_tool(self.current_filament)
 
         self.pulley_stepper.do_set_position(0)
         self.pulley_stepper.do_move(
-            10,
-            self.pulley_stepper.velocity,
-            self.pulley_stepper.accel,
+            self.bowden_load_length3 / 2,
+            self.idler_load_to_extruder_speed,
+            0,
+            sync=False
         )
-
-        self.pulley_stepper.do_set_position(0)
-        self.disable_steppers(self.pulley_stepper)
-
-        self.gcode.run_script_from_command("G1 E5 F600")
-        self.unselect_tool()
-        self.gcode.run_script_from_command("""
-            G1 E2 F1800
-            G1 E3 F1393
-            G1 E2 F614
+        self.gcode.run_script_from_command(f"""
+            G91
             G92 E0
+            G1 E{self.bowden_load_length3 / 2} F{self.idler_load_to_extruder_speed * 60}
             G90
         """)
+        self.pulley_stepper.do_set_position(0)
+        self.disable_steppers(self.pulley_stepper)
+        self.unselect_tool()
         return True
 
     def load_filament_in_extruder(self) -> bool:
@@ -872,42 +1009,40 @@ class MMU3:
         if not self.validate_hotend_is_hot_enough():
             return False
 
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
-
         self.display_status_msg("Loading Filament...")
-        self.gcode.run_script_from_command("G91")
         self.pulley_stepper.do_set_position(0)
         self.pulley_stepper.do_move(
-            20,
+            self.bowden_load_length3,
             self.idler_load_to_extruder_speed,
             self.pulley_stepper.accel,
+            sync=False,
         )
-        self.pulley_stepper.do_set_position(0)
-        self.disable_steppers(self.pulley_stepper)
-        self.gcode.run_script_from_command("G1 E10 F600")
-        self.unselect_tool()
-        self.gcode.run_script_from_command("""
-            G1 E3 F1800
-            G1 E4 F1393
-            G1 E3 F614
+        self.gcode.run_script_from_command(f"""
+            G91
             G92 E0
+            G1 E{self.bowden_load_length3} F{self.idler_load_to_extruder_speed * 60}
             G90
         """)
+        self.pulley_stepper.do_set_position(0)
+        self.disable_steppers(self.pulley_stepper)
+        self.unselect_tool()
         if not self.is_filament_present_in_extruder:
             for _ in range(self.load_retry):
                 self.retry_load_filament_in_extruder()
 
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         if not self.validate_filament_in_extruder():
-            self.respond_debug(f"self.current_tool    : {self.current_tool}")
-            self.respond_debug(f"self.current_filament: {self.current_filament}")
             return False
 
+        if self.enable_filament_cutter and self.cut_load_length > 0:
+            # load the filament a little more after the cutter
+            self.gcode.run_script_from_command(f"""
+                G91
+                G92 E0
+                G1 E{self.cut_load_length} F600
+                G90
+            """)
+
         self.display_status_msg("Load Complete")
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         return True
 
     def retry_unload_filament_in_extruder(self) -> None:
@@ -1048,8 +1183,6 @@ class MMU3:
         if self.is_paused:
             return False
 
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         if self.current_tool is None:
             self.display_status_msg("Cannot load to FINDA, tool not selected !!")
             return False
@@ -1066,16 +1199,11 @@ class MMU3:
         # )
         self.disable_steppers(self.pulley_stepper)
 
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
-
         if not self.validate_filament_is_in_finda():
             return False
 
         self.current_filament = self.current_tool
         self.display_status_msg("Loading done to FINDA")
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         return True
 
     def load_filament_from_finda_to_extruder(self) -> bool:
@@ -1104,6 +1232,7 @@ class MMU3:
             self.bowden_load_length2,
             self.bowden_load_speed2,
             self.bowden_load_accel2,
+            sync=False,
         )
         self.disable_steppers(self.pulley_stepper)
         self.display_status_msg("Loading done from FINDA to extruder")
@@ -1291,7 +1420,7 @@ class MMU3:
         self.display_status_msg("Unloading done from extruder to MMU")
         return True
 
-    def cut_filament(self, tool_id: int) -> bool:
+    def cut_filament_in_mmu(self, tool_id: int) -> bool:
         """Cut the filament in the MMU3.
 
         Perform the cut from right to left.
@@ -1405,21 +1534,14 @@ class MMU3:
         if self.is_paused:
             return False
 
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
+        if not self.validate_hotend_is_hot_enough():
+            return False
+
         self.display_status_msg(f"LT {tool_id}")
         if not self.select_tool(tool_id):
-            self.respond_debug(f"self.current_tool    : {self.current_tool}")
-            self.respond_debug(f"self.current_filament: {self.current_filament}")
             return False
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         if not self.load_filament_to_extruder():
-            self.respond_debug(f"self.current_tool    : {self.current_tool}")
-            self.respond_debug(f"self.current_filament: {self.current_filament}")
             return False
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         return self.load_filament_in_extruder()
 
     def unload_tool(self) -> bool:
@@ -1450,6 +1572,11 @@ class MMU3:
             self.display_status_msg("And no filament in FINDA")
             self.display_status_msg("No need to unload!")
             return True
+
+        if self.enable_filament_cutter and self.is_filament_present_in_extruder:
+            self.display_status_msg(f"Cut T{self.current_filament}")
+            # cut the filament in extruder
+            self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
 
         self.display_status_msg(f"UT {self.current_filament}")
         if not self.unload_filament_in_extruder():
@@ -1618,84 +1745,29 @@ class MMU3:
             tool_id (int, optional): The tool id to load. Defaults to 0.
         """
         self.display_status_msg(f"Requested tool {tool_id}")
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
         if self.current_filament == tool_id:
             return
         self.display_status_msg(f"Change Tool T{tool_id}")
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
 
-        filament_switch_sensor_state = None
-        if self.filament_switch_sensor and self.filament_switch_sensor.runout_helper.sensor_enabled:
-            self.respond_info("Disabling filament runout sensor!")
-            filament_switch_sensor_state = self.filament_switch_sensor.runout_helper.sensor_enabled
-            self.filament_switch_sensor.runout_helper.sensor_enabled = False
+        with (
+            FilamentSwitchSensorManager(
+                self.filament_switch_sensor, False, self.respond_info
+            ),
+            FilamentMotionSensorManager(
+                self.filament_motion_sensor,
+                False,
+                self.respond_info,
+                self.reactor,
+                self.toolhead,
+            ),
+        ):
+            if not self.unload_tool():
+                self.respond_info("Apparently unload tool failed!")
+                return
 
-        filament_motion_sensor_state = None
-        if self.filament_motion_sensor and self.filament_motion_sensor.runout_helper.sensor_enabled:
-            self.respond_info("Disabling filament motion sensor!")
-            filament_motion_sensor_state = self.filament_motion_sensor.runout_helper.sensor_enabled
-            self.filament_motion_sensor.runout_helper.sensor_enabled = False
-
-
-        if not self.unload_tool():
-            self.respond_info("Apparently unload tool failed!")
-            self.respond_debug(f"self.current_tool    : {self.current_tool}")
-            self.respond_debug(f"self.current_filament: {self.current_filament}")
-
-            if filament_switch_sensor_state:
-                self.respond_info("Re-Enabling filament runout sensor!")
-                self.filament_switch_sensor.runout_helper.sensor_enabled = True
-
-            if filament_motion_sensor_state:
-                self.respond_info("Re-Enabling filament motion sensor!")
-                # also update the event time so that the runout doesn't trigger
-                # print_time = self.toolhead.get_last_move_time()
-                # self.filament_motion_sensor._update_filament_runout_pos()
-                event_time = self.reactor.monotonic() or self.toolhead.get_last_move_time()
-                self.filament_motion_sensor.encoder_event(event_time, None)
-                self.filament_motion_sensor.runout_helper.sensor_enabled = True
-            return
-
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
-        if not self.load_tool(tool_id):
-            # TODO: if load fails, try unloading and loading again for several
-            #       times, most of the time unloading and loading again solves
-            #       the load issue especially after installing the filament
-            #       encoder the filament path become problematic.
-            #       Also after all attempts failed we can cut the tip of the
-            #       filament and try again...
-
-            if filament_switch_sensor_state:
-                self.respond_info("Re-Enabling filament runout sensor!")
-                self.filament_switch_sensor.runout_helper.sensor_enabled = True
-
-            if filament_motion_sensor_state:
-                self.respond_info("Re-Enabling filament motion sensor!")
-                # also update the event time so that the runout doesn't trigger
-                # print_time = self.toolhead.get_last_move_time()
-                # self.filament_motion_sensor._update_filament_runout_pos()
-                event_time = self.reactor.monotonic() or self.toolhead.get_last_move_time()
-                self.filament_motion_sensor.encoder_event(event_time, None)
-                self.filament_motion_sensor.runout_helper.sensor_enabled = True
-            return
-        self.respond_debug(f"self.current_tool    : {self.current_tool}")
-        self.respond_debug(f"self.current_filament: {self.current_filament}")
-
-        if filament_switch_sensor_state:
-            self.respond_info("Re-Enabling filament runout sensor!")
-            self.filament_switch_sensor.runout_helper.sensor_enabled = True
-
-        if filament_motion_sensor_state:
-            self.respond_info("Re-Enabling filament motion sensor!")
-            # also update the event time so that the runout doesn't trigger
-            # print_time = self.toolhead.get_last_move_time()
-            # self.filament_motion_sensor._update_filament_runout_pos(print_time)
-            event_time = self.reactor.monotonic() or self.toolhead.get_last_move_time()
-            self.filament_motion_sensor.encoder_event(event_time, None)
-            self.filament_motion_sensor.runout_helper.sensor_enabled = True
+            if not self.load_tool(tool_id):
+                self.respond_info("Apparently load tool failed!")
+                return
 
         self.display_status_msg(f"Done T{tool_id}")
 
@@ -1707,7 +1779,7 @@ class MMU3:
             gcmd (GCodeCommand): The G-code command.
             tool_id (int, optional): The tool id to cut. Defaults to 0.
         """
-        self.cut_filament(tool_id)
+        self.cut_filament_in_mmu(tool_id)
 
     @gcmd_grabber
     def cmd_unlock(self, gcmd: GCodeCommand) -> None:
