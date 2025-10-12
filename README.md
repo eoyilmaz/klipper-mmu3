@@ -80,6 +80,12 @@ The extension supplies all the necessary gcode commands.
    Unlocks the MMU by moving the idler to the home position. Mostly needed when
    you need to pull/push the filament manually.
 
+8. `CUT_FILAMENT_IN_EXTRUDER`
+
+   This macro is defined in the `mmu3.cfg` and controls the movement required
+   to cut the filament inside the extruder. This is called by the `Tx` commands
+   if the `enable_filament_cutter` is set to `True`.
+
 The following is the list of all the commands available, most of them are
 internally used and will be removed in the future as they are not supplying any
 user facing functionality, but are residues from the previous GCode Macro based
