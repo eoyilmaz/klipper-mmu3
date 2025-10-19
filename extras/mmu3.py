@@ -291,10 +291,10 @@ class MMU3:
         self.idler_unload_speed = config.getint("idler_unload_speed", 30)
         # pause values
         self.pause_before_disabling_steppers = (
-            config.getint("pause_before_disabling_steppers", 50) / 1000.0
+            config.getint("pause_before_disabling_steppers", 100) / 1000.0
         )
         self.pause_after_disabling_steppers = (
-            config.getint("pause_after_disabling_steppers", 200) / 1000.0
+            config.getint("pause_after_disabling_steppers", 250) / 1000.0
         )
         self.pause_position = [
             float(f.strip()) for f in config.getlist("pause_position", [0, 200, 10])
@@ -606,6 +606,7 @@ class MMU3:
             return False
 
         for stepper in steppers:
+            self.toolhead.wait_moves()
             stepper.dwell(self.pause_before_disabling_steppers)
             stepper.do_enable(False)
             stepper.dwell(self.pause_after_disabling_steppers)
@@ -928,6 +929,7 @@ class MMU3:
         """
         if self.is_paused:
             return False
+
         if not self.is_homed:
             self.display_status_msg("Could not unselect tool, MMU is not homed")
             return False
@@ -941,6 +943,7 @@ class MMU3:
             self.idler_home_position,
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
+            sync=False
         )
         self.current_tool = None
         self.disable_steppers(self.idler_stepper)
