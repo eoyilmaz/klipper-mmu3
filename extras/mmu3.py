@@ -356,6 +356,7 @@ class MMU3:
 
     def register_commands(self) -> None:
         """Register new GCode commands."""
+        self.gcode.register_command("PULLEY_CALIBRATE", self.cmd_pulley_calibrate)
         self.gcode.register_command(
             "LOAD_FILAMENT_TO_FINDA_IN_LOOP", self.cmd_load_filament_to_finda_in_loop
         )
@@ -638,7 +639,7 @@ class MMU3:
             self.display_status_msg("Filament stuck in extruder")
             self.pause()
             return False
-        self.display_status_msg("Filament not in extruder")
+        self.display_status_msg("Filament not stuck in extruder")
         return True
 
     def validate_filament_is_in_finda(self) -> bool:
@@ -666,7 +667,7 @@ class MMU3:
             self.display_status_msg("Filament stuck in FINDA")
             self.pause()
             return False
-        self.display_status_msg("Filament not in FINDA")
+        self.display_status_msg("Filament not stuck in FINDA")
         return True
 
     def validate_hotend_is_hot_enough(self) -> bool:
@@ -695,16 +696,16 @@ class MMU3:
         self.display_status_msg("Homing idler")
         self.idler_stepper.do_set_position(0)
         self.idler_stepper.do_move(
-            7,
+            -7,
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
         )
         self.idler_stepper.do_move(
-            -95,
+            120,
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
         )
-        self.idler_stepper.do_set_position(2)
+        self.idler_stepper.do_set_position(0)
         self.idler_stepper.do_move(
             self.idler_home_position,
             self.idler_stepper.velocity,
@@ -907,6 +908,7 @@ class MMU3:
             self.idler_positions[tool_id],
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
+            sync=False,
         )
 
         if not self.enable_no_selector_mode:
@@ -943,7 +945,7 @@ class MMU3:
             self.idler_home_position,
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
-            sync=False
+            sync=False,
         )
         self.current_tool = None
         self.disable_steppers(self.idler_stepper)
@@ -981,7 +983,7 @@ class MMU3:
             self.bowden_load_length3 / 2,
             self.idler_load_to_extruder_speed,
             0,
-            sync=False
+            sync=False,
         )
         self.gcode.run_script_from_command(f"""
             G91
@@ -1087,9 +1089,6 @@ class MMU3:
         if self.is_paused:
             return False
 
-        if not self.validate_hotend_is_hot_enough():
-            return False
-
         if not self.is_filament_present_in_extruder:
             self.display_status_msg("No filament in extruder")
             return True
@@ -1103,6 +1102,9 @@ class MMU3:
             self.respond_info(f"Auto unselecting T{self.current_tool}")
             self.unselect_tool()
 
+        if not self.validate_hotend_is_hot_enough():
+            return False
+
         self.display_status_msg("Unloading Filament...")
         self.gcode.run_script_from_command("""
             G91
@@ -1113,6 +1115,7 @@ class MMU3:
             G92 E0
             G4 P1000
         """)
+
         if self.is_filament_present_in_extruder:
             for _ in range(self.unload_retry):
                 self.retry_unload_filament_in_extruder()
@@ -1174,6 +1177,36 @@ class MMU3:
         self.display_status_msg("Filament rammed and removed")
         return True
 
+    def pulley_calibrate(self) -> bool:
+        """Calibrate pulley rotation_distance value.
+
+        This will first load the filament in to the FINDA, pause for 10
+        seconds, and then pull exactly 100 mm of filament and then pause. So,
+        that the pulled filament can be measured from behind the MMU.
+
+        Returns:
+            bool: True, if filament is pulled by 100 mm, False in any other
+                errors.
+        """
+        # pull the filament to finda
+        self.display_status_msg("Load to FINDA")
+        if not self.load_filament_to_finda():
+            return False
+
+        # wait for 10 seconds
+        self.display_status_msg("Mark the filament")
+        self.reactor.pause(self.reactor.monotonic() + 10)
+
+        # now pull exactly 100 mm of filament.
+        self.display_status_msg("Loading 100 mm")
+        self.pulley_stepper.do_set_position(0)
+        self.pulley_stepper.do_move(
+            100,
+            self.bowden_load_speed1,
+            self.bowden_load_accel1,
+        )
+        return True
+
     def load_filament_to_finda(self) -> bool:
         """Load filament until the FINDA detect it.
 
@@ -1195,11 +1228,6 @@ class MMU3:
             return False
 
         self.pulley_stepper.do_set_position(0)
-        # self.pulley_stepper.do_move(
-        #     10,
-        #     self.pulley_stepper.velocity,
-        #     self.pulley_stepper.accel,
-        # )
         self.disable_steppers(self.pulley_stepper)
 
         if not self.validate_filament_is_in_finda():
@@ -1248,7 +1276,7 @@ class MMU3:
         Then LOAD_FILAMENT_FROM_FINDA_TO_EXTRUDER.
         PAUSE_MMU is called if the FINDA does not detect the filament.
 
-        Args:
+        Returns:
             bool: True, if filament is loaded to extruder
         """
         if self.is_paused:
@@ -1434,11 +1462,15 @@ class MMU3:
         Returns:
             bool: True, if filament is cut, False otherwise.
         """
+        if self.number_of_tools > 5:
+            self.display_status_msg("Not supported!")
+            return False
+
         if self.is_paused:
             return False
 
         if self.enable_no_selector_mode:
-            self.display_status_msg("Cannot perform cut in 5in1 mode!")
+            self.display_status_msg("Not supported in 5in1 mode!")
             return False
 
         self.display_status_msg(f"Cutting filament T{tool_id} ...")
@@ -2002,6 +2034,15 @@ class MMU3:
             gcmd (GCodeCommand): The G-code command.
         """
         self.eject_before_home()
+
+    @gcmd_grabber
+    def cmd_pulley_calibrate(self, gcmd: GCodeCommand) -> None:
+        """Calibrate pulley rotation_distance.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+        """
+        self.pulley_calibrate()
 
 
 def load_config_prefix(config: ConfigWrapper) -> MMU3:
