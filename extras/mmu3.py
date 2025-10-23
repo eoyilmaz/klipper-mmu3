@@ -695,21 +695,28 @@ class MMU3:
         # Home the idler
         self.display_status_msg("Homing idler")
         self.idler_stepper.do_set_position(0)
+        # to make sure that the idler is not already at the endstop
+        # rotate it a little back
         self.idler_stepper.do_move(
             -7,
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
         )
+        # do a big rotation to ensure we hit the end stop
         self.idler_stepper.do_move(
             120,
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
         )
+        # we must have hit the endstop
+        # this is the 0 position
         self.idler_stepper.do_set_position(0)
+        # move to the parking position
         self.idler_stepper.do_move(
-            self.idler_home_position,
+            self.idler_positions[-1],
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
+            sync=False,
         )
         self.disable_steppers(self.idler_stepper)
 
@@ -722,35 +729,14 @@ class MMU3:
         Returns:
             bool: True, if homed, False otherwise.
         """
-        self.respond_debug("Start of home_mmu")
-
-        filament_switch_sensor_state = None
-        if (
-            self.filament_switch_sensor
-            and self.filament_switch_sensor.runout_helper.sensor_enabled
+        with FilamentSwitchSensorManager(
+            self.filament_switch_sensor, False, self.respond_info
         ):
-            self.respond_info("Disabling filament runout sensor!")
-            filament_switch_sensor_state = (
-                self.filament_switch_sensor.runout_helper.sensor_enabled
-            )
-            self.filament_switch_sensor.runout_helper.sensor_enabled = False
-
-        self.is_homed = True
-        self.display_status_msg("Homing MMU ...")
-        if not self.eject_before_home():
-            return False
-
-        self.respond_debug("Before home_mmu_only inside home_mmu")
-        home_mmu_only_result = self.home_mmu_only()
-        self.respond_debug("After home_mmu_only inside home_mmu")
-
-        if filament_switch_sensor_state is not None:
-            self.respond_info("Re-Enabling filament runout sensor!")
-            self.filament_switch_sensor.runout_helper.sensor_enabled = (
-                filament_switch_sensor_state
-            )
-
-        return home_mmu_only_result
+            self.is_homed = True
+            self.display_status_msg("Homing MMU ...")
+            if not self.eject_before_home():
+                return False
+            return self.home_mmu_only()
 
     def home_mmu_only(self) -> bool:
         """Home the MMU.
@@ -785,16 +771,11 @@ class MMU3:
             self.selector_stepper.do_set_position(0)
             self.disable_steppers(self.selector_stepper)
 
-        # self.idler_stepper.do_move(
-        #     0,
-        #     self.idler_stepper.velocity,
-        #     self.idler_stepper.accel,
-        # )
         self.current_tool = None
         self.current_filament = None
         self.disable_steppers(self.idler_stepper)
-        self.display_status_msg("Move selector to filament 0")
-        self.select_tool(0)
+        # self.display_status_msg("Move selector to filament 0")
+        # self.select_tool(0)
         self.unselect_tool()
         self.is_homed = True
         self.display_status_msg("Homing MMU ended ...")
@@ -942,7 +923,7 @@ class MMU3:
             self.respond_info("Unselecting tool while Current Tool is None!")
 
         self.idler_stepper.do_move(
-            self.idler_home_position,
+            self.idler_positions[-1],
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
             sync=False,
