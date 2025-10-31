@@ -1087,6 +1087,10 @@ class MMU3:
                 G90
             """)
 
+        # now we can enable the filament switch sensor
+        if self.filament_motion_sensor:
+            self.filament_switch_sensor.runout_helper.sensor_enabled = True
+
         self.display_status_msg("Load Complete")
         return True
 
@@ -1144,6 +1148,11 @@ class MMU3:
 
         if not self.validate_hotend_is_hot_enough():
             return False
+
+        # before unloading the filament from extruder,
+        # disable the filament sensor as it will trigger a filament runout error
+        if self.filament_switch_sensor:
+            self.filament_switch_sensor.runout_helper.sensor_enabled = False
 
         self.display_status_msg("Unloading Filament...")
         self.gcode.run_script_from_command("""
