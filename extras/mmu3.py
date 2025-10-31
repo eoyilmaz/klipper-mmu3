@@ -879,7 +879,7 @@ class MMU3:
         self.is_paused = False
         # if there is a failed command run it again
         if self._last_command_failed is not None:
-            if self._last_command_failed.__name__ != "resume":
+            if self._last_command_failed.__name__ != "cmd_resume":
                 result = self._last_command_failed(
                     self,
                     self._gcmd,
