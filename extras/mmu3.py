@@ -285,7 +285,7 @@ class MMU3:
         self.cut_stepper_current = config.getfloat("cut_stepper_current", 1.0)
         # cut in extruder
         self.enable_filament_cutter = config.getboolean("enable_filament_cutter", False)
-        self.cut_load_length = config.getfloat("cut_load_length", 0)
+        self.extra_load_length = config.getfloat("extra_load_length", 0)
         # selector
         self.selector_speed = config.getfloat("selector_speed", 35)
         self.selector_homing_speed = config.getfloat("selector_homing_speed", 20)
@@ -1080,12 +1080,12 @@ class MMU3:
         if not self.validate_filament_in_extruder():
             return False
 
-        if self.enable_filament_cutter and self.cut_load_length > 0:
-            # load the filament a little more after the cutter
+        if self.enable_filament_cutter and self.extra_load_length > 0:
+            # load the filament a little more
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
-                G1 E{self.cut_load_length} F600
+                G1 E{self.extra_load_length} F600
                 G90
             """)
 
