@@ -1018,11 +1018,10 @@ class MMU3:
             return False
 
         self.display_status_msg("Loading Filament...")
-        self.select_tool(self.current_filament)
 
         self.pulley_stepper.do_set_position(0)
         self.pulley_stepper.do_move(
-            self.bowden_load_length3 / 2,
+            self.bowden_load_length3,
             self.idler_load_to_extruder_speed,
             0,
             sync=False,
@@ -1030,12 +1029,10 @@ class MMU3:
         self.gcode.run_script_from_command(f"""
             G91
             G92 E0
-            G1 E{self.bowden_load_length3 / 2} F{self.idler_load_to_extruder_speed * 60}
+            G1 E{self.bowden_load_length3} F{self.idler_load_to_extruder_speed * 60}
             G90
         """)
         self.pulley_stepper.do_set_position(0)
-        self.disable_steppers(self.pulley_stepper)
-        self.unselect_tool()
         return True
 
     def load_filament_in_extruder(self) -> bool:
@@ -1071,11 +1068,12 @@ class MMU3:
             G90
         """)
         self.pulley_stepper.do_set_position(0)
-        self.disable_steppers(self.pulley_stepper)
-        self.unselect_tool()
         if not self.is_filament_present_in_extruder:
             for _ in range(self.load_retry):
                 self.retry_load_filament_in_extruder()
+
+        self.disable_steppers(self.pulley_stepper)
+        self.unselect_tool()
 
         if not self.validate_filament_in_extruder():
             return False
