@@ -1220,7 +1220,12 @@ class MMU3:
             self.unselect_tool()
 
         self.display_status_msg("Ramming and Unloading Filament...")
-        self.ramming_slicer()
+
+        if self.enable_filament_cutter:
+            self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
+        else:
+            self.ramming_slicer()
+
         if not self.unload_filament_in_extruder():
             return False
         self.display_status_msg("Filament rammed and removed")
