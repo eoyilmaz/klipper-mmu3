@@ -289,19 +289,25 @@ class MMU3:
         # selector
         self.selector_speed = config.getfloat("selector_speed", 35)
         self.selector_homing_speed = config.getfloat("selector_homing_speed", 20)
+        self.selector_homing_move_length = config.getfloat(
+            "selector_homing_move_length", -76
+        )
         self.selector_accel = config.getfloat("selector_accel", 200)
         self.selector_positions = [
             float(f.strip())
             for f in config.getlist(
-                "selector_positions", [73.5, 59.375, 45.25, 31.125, 17]
+                "selector_positions", [73.5, 59.375, 45.25, 31.125, 17, 0]
             )
         ]
         # idler
         self.idler_positions = [
             float(f.strip())
-            for f in config.getlist("idler_positions", [5, 20, 35, 50, 65])
+            for f in config.getlist("idler_positions", [5, 20, 35, 50, 65, 85])
         ]
-        self.idler_home_position = config.getfloat("idler_home_position", 85)
+        self.idler_homing_move_lengths = [
+            float(f.strip())
+            for f in config.getlist("idler_homing_move_lengths", [7, -95])
+        ]
         self.idler_load_to_extruder_speed = config.getint(
             "idler_load_to_extruder_speed", 10
         )
@@ -718,13 +724,13 @@ class MMU3:
         # to make sure that the idler is not already at the endstop
         # rotate it a little back
         self.idler_stepper.do_move(
-            -7,
+            self.idler_homing_move_lengths[0],
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
         )
         # do a big rotation to ensure we hit the end stop
         self.idler_stepper.do_move(
-            120,
+            self.idler_homing_move_lengths[1],
             self.idler_stepper.velocity,
             self.idler_stepper.accel,
         )
@@ -784,7 +790,7 @@ class MMU3:
             self.display_status_msg("Homing selector")
             self.selector_stepper.do_set_position(0)
             self.selector_stepper.do_homing_move(
-                -76,
+                self.selector_homing_move_length,
                 self.selector_homing_speed,
                 self.selector_accel,
                 True,
@@ -1087,7 +1093,7 @@ class MMU3:
                 G90
             """)
 
-        # now we can enable the filament switch sensor
+        # now we can enable the filament switch sensor
         if self.filament_motion_sensor:
             self.filament_switch_sensor.runout_helper.sensor_enabled = True
 
