@@ -13,7 +13,7 @@ following features:
 - Support for [MMU3-12x project](https://github.com/cjbaar/prusa-mmu-12x)
 - Sensorless homing for the selector
 - MMU specific menus
-- Cut functionality
+- Cut filament in MMU functionality (Only available for MMU3-5x)
 - Smoother load/unload experience
 - Easier path to future implementations
 
@@ -31,6 +31,14 @@ No installation scripts yet. Just follow the steps:
 2. Copy `mmu3.cfg`, `mmu3_menus.cfg` and `beep.cfg` to your config folder, typically `printer_data/config`.
 3. Add `mmu3.cfg` to your `printer.cfg`.
 4. Update `mmu3.cfg` according to your setup.
+   - Specifically update the `filament_switch_sensor_name` and
+     `filament_motion_sensor_name` parameters to match your printer config.
+
+     ```ini
+     [mmu3 MMU3]
+     filament_switch_sensor_name: filament_switch_sensor my_filament_sensor
+     filament_motion_sensor_name: filament_motion_sensor encoder_sensor
+     ```
 
 Usage
 -----
