@@ -288,7 +288,7 @@ class MMU3:
         self.extra_load_length = config.getfloat("extra_load_length", 0)
         # selector
         self.selector_speed = config.getfloat("selector_speed", 35)
-        self.selector_homing_speed = config.getfloat("selector_homing_speed", 20)
+        self.selector_homing_speed = config.getfloat("selector_homing_speed", 5)
         self.selector_homing_move_length = config.getfloat(
             "selector_homing_move_length", -76
         )
@@ -789,6 +789,14 @@ class MMU3:
         if not self.enable_no_selector_mode:
             self.display_status_msg("Homing selector")
             self.selector_stepper.do_set_position(0)
+            # move 1 slot right before homing
+            self.selector_stepper.do_move(
+                abs(self.selector_positions[1] - self.selector_positions[0]),
+                self.selector_speed,
+                self.selector_accel,
+            )
+            self.selector_stepper.do_set_position(0)
+            self.toolhead.wait_moves()
             self.selector_stepper.do_homing_move(
                 self.selector_homing_move_length,
                 self.selector_homing_speed,
@@ -796,6 +804,7 @@ class MMU3:
                 True,
                 True,
             )
+            self.toolhead.wait_moves()
             self.selector_stepper.do_set_position(0)
             self.disable_steppers(self.selector_stepper)
 
