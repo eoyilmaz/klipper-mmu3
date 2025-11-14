@@ -41,14 +41,34 @@ STEPPER_NAME_MAP = {
 }
 
 
+def auto_pause(f: Callable) -> Callable:
+    """Decorator to automatically pause the MMU3 on command failure.
+
+    If any of the decorated commands fail (return False), the MMU3 instance is
+    paused automatically.
+
+    Args:
+        f (Callable): The function to wrap.
+
+    Returns:
+        Callable: The wrapped function.
+    """
+
+    @wraps(f)
+    def wrapped_f(self: object, gcmd: GCodeCommand, *args, **kwargs) -> None:
+        result = f(self, gcmd, *args, **kwargs)
+        if not result and not self.is_paused:
+            self.pause()
+        return result
+
+    return wrapped_f
+
+
 def gcmd_grabber(f: Callable) -> Callable:
     """Decorator to grab the gcmd arg temporarily from command methods.
 
-    This also stores the failed commands, to be called again with the
-    `MMU3.resume()` function, which makes resuming after failed commands way
-    simpler, as the user doesn't need to check which command is failed and
-    rerun it, they can just call `RESUME_MMU` and it will retry the last
-    failed command.
+    This allows non-command methods to use the respond_info and respond_debug
+    methods.
 
     Args:
         f (Callable): The function to wrap.
@@ -61,14 +81,7 @@ def gcmd_grabber(f: Callable) -> Callable:
     def wrapped_f(self: object, gcmd: GCodeCommand, *args, **kwargs) -> None:
         self._gcmd = gcmd
         result = f(self, gcmd, *args, **kwargs)
-        # store the last failed command
-        if not result:
-            # do not reset the _gcmd attribute
-            self._last_command_failed = f
-            self._last_command_failed_args = args
-            self._last_command_failed_kwargs = kwargs
-        else:
-            self._gcmd = None
+        self._gcmd = None
         return result
 
     return wrapped_f
@@ -332,6 +345,7 @@ class MMU3:
         )
         self.load_retry = config.getint("load_retry", 5)
         self.unload_retry = config.getint("unload_retry", 5)
+        self.tool_change_retry = config.getint("tool_change_retry", 5)
         self.filament_switch_sensor_name = config.get(
             "filament_switch_sensor_name", "filament_switch_sensor my_filament_sensor"
         )
@@ -646,7 +660,6 @@ class MMU3:
         self.display_status_msg("Checking if filament in extruder")
         if not self.is_filament_present_in_extruder:
             self.display_status_msg("Filament not in extruder")
-            self.pause()
             return False
         self.display_status_msg("Filament in extruder")
         return True
@@ -660,7 +673,6 @@ class MMU3:
         self.display_status_msg("Checking if filament stuck in extruder")
         if self.is_filament_present_in_extruder:
             self.display_status_msg("Filament stuck in extruder")
-            self.pause()
             return False
         self.display_status_msg("Filament not stuck in extruder")
         return True
@@ -674,7 +686,6 @@ class MMU3:
         self.display_status_msg("Checking if filament in FINDA")
         if not self.is_filament_in_finda:
             self.display_status_msg("Filament not in FINDA")
-            self.pause()
             return False
         self.display_status_msg("Filament in FINDA")
         return True
@@ -688,7 +699,6 @@ class MMU3:
         self.display_status_msg("Checking if filament stuck in FINDA")
         if self.is_filament_in_finda:
             self.display_status_msg("Filament stuck in FINDA")
-            self.pause()
             return False
         self.display_status_msg("Filament not stuck in FINDA")
         return True
@@ -705,7 +715,6 @@ class MMU3:
         print_time = self.toolhead.get_last_move_time()
         if self.extruder_heater.get_temp(print_time)[0] < self.min_temp_extruder:
             self.display_status_msg("Hotend is too cold")
-            self.pause()
             return False
         return True
 
@@ -851,7 +860,6 @@ class MMU3:
         self.display_status_msg(
             f"Couldn't load filament to FINDA after {self.finda_load_retry} tries!"
         )
-        self.pause()
         return False
 
     def pause(self) -> bool:
@@ -892,34 +900,6 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         self.is_paused = False
-        # if there is a failed command run it again
-        if self._last_command_failed is not None:
-            if self._last_command_failed.__name__ != "cmd_resume":
-                result = self._last_command_failed(
-                    self,
-                    self._gcmd,
-                    *self._last_command_failed_args,
-                    **self._last_command_failed_kwargs,
-                )
-                if result is False:
-                    # command failed again, pause
-                    self.pause()
-                    return False
-
-                # command succeeded, continue resuming
-                self._gcmd = None
-                self._last_command_failed = None
-                self._last_command_failed_args = None
-                self._last_command_failed_kwargs = None
-
-            else:
-                # resume has failed, this will create a recursion
-                # just delete the failed command and continue
-                self._gcmd = None
-                self._last_command_failed = None
-                self._last_command_failed_args = None
-                self._last_command_failed_kwargs = None
-
         self.gcode.run_script_from_command(
             """
             M118 End PAUSE
@@ -959,6 +939,7 @@ class MMU3:
             return False
 
         if tool_id is None or tool_id < 0:
+            self.display_status_msg(f"Invalid tool id: {tool_id}")
             return False
 
         self.display_status_msg(f"Select Tool {tool_id} ...")
@@ -1153,9 +1134,6 @@ class MMU3:
             return True
 
         if self.current_tool is not None:
-            # self.respond_info("Tool selected, UNSELECT it")
-            # self.pause()
-            # return False
             self.respond_info(f"Tool T{self.current_tool} selected!")
             self.respond_info("Auto unselecting it!")
             self.respond_info(f"Auto unselecting T{self.current_tool}")
@@ -1225,10 +1203,6 @@ class MMU3:
             return False
 
         if self.current_tool is not None:
-            # # current tool is not None
-            # self.respond_info("Tool selected, UNSELECT it")
-            # self.pause()
-            # return False
             self.respond_info(f"Tool T{self.current_tool} selected!")
             self.respond_info("Auto unselecting it!")
             self.display_status_msg(f"Auto unselecting T{self.current_tool}")
@@ -1481,7 +1455,6 @@ class MMU3:
         self.display_status_msg(
             f"Couldn't unload filament to FINDA after {self.finda_unload_retry} tries!"
         )
-        self.pause()
         return False
 
     def unload_filament_from_extruder(self) -> bool:
@@ -1774,6 +1747,7 @@ class MMU3:
         return True
 
     @gcmd_grabber
+    @auto_pause
     def cmd_home_idler(self, gcmd: GCodeCommand) -> bool:
         """Home the idler.
 
@@ -1786,6 +1760,7 @@ class MMU3:
         return self.home_idler()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_home_mmu(self, gcmd: GCodeCommand) -> bool:
         """Home the MMU.
 
@@ -1801,6 +1776,7 @@ class MMU3:
         return self.home_mmu()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_home_mmu_only(self, gcmd: GCodeCommand) -> bool:
         """Home the MMU.
 
@@ -1822,6 +1798,7 @@ class MMU3:
         return self.home_mmu_only()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_load_filament_to_finda_in_loop(self, gcmd: GCodeCommand) -> bool:
         """Load the filament to FINDA in a infinite loop.
 
@@ -1863,6 +1840,7 @@ class MMU3:
 
     # @store_failed_cmd
     @gcmd_grabber
+    @auto_pause
     def cmd_tx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
         """The generic Tx command.
 
@@ -1873,12 +1851,11 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        self.display_status_msg(f"Requested tool {tool_id}")
+        self.display_status_msg(f"Requested T{tool_id}")
 
         if self.current_filament == tool_id:
             return True
 
-        self.display_status_msg(f"Change Tool T{tool_id}")
         with (
             FilamentSwitchSensorManager(
                 self.filament_switch_sensor, False, self.respond_info
@@ -1891,18 +1868,30 @@ class MMU3:
                 self.toolhead,
             ),
         ):
-            if not self.unload_tool():
-                self.respond_info(f"Unload T{self.current_filament} failed!")
-                return False
+            for i in range(self.tool_change_retry):
+                self.display_status_msg(f"T{tool_id} ({i})...")
+                if not self.unload_tool():
+                    self.respond_info(f"Unload T{self.current_filament} failed!")
+                    continue
 
-            if not self.load_tool(tool_id):
-                self.respond_info(f"Load T{tool_id} failed!")
+                # if this is the last try, do a homing move as a last resort
+                if i == self.tool_change_retry - 1:
+                    self.home_mmu()
+
+                if not self.load_tool(tool_id):
+                    self.respond_info(f"Load T{tool_id} failed!")
+                    continue
+                break
+            else:
+                # so the load did not happen...
+                self.respond_info(f"T{tool_id} failed!")
                 return False
 
         self.display_status_msg(f"Done T{tool_id}")
         return True
 
     @gcmd_grabber
+    @auto_pause
     def cmd_kx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
         """The generic Kx command.
 
@@ -1925,6 +1914,7 @@ class MMU3:
         return self.unlock()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_load_tool(self, gcmd: GCodeCommand) -> bool:
         """Load filament from MMU3 to nozzle.
 
@@ -1938,6 +1928,7 @@ class MMU3:
         return self.load_tool(tool_id)
 
     @gcmd_grabber
+    @auto_pause
     def cmd_unload_tool(self, gcmd: GCodeCommand) -> bool:
         """Unload filament from nozzle to MMU3.
 
@@ -1950,6 +1941,7 @@ class MMU3:
         return self.unload_tool()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_select_tool(self, gcmd: GCodeCommand) -> bool:
         """Select a tool. move the idler and then move the selector (if needed).
 
@@ -1963,6 +1955,7 @@ class MMU3:
         return self.select_tool(tool_id)
 
     @gcmd_grabber
+    @auto_pause
     def cmd_unselect_tool(self, gcmd: GCodeCommand) -> bool:
         """Unselect a tool, only park the idler.
 
@@ -1975,6 +1968,7 @@ class MMU3:
         return self.unselect_tool()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_retry_load_filament_in_extruder(self, gcmd: GCodeCommand) -> bool:
         """Try to reinsert the filament into the extruder.
 
@@ -1991,6 +1985,7 @@ class MMU3:
         return self.retry_load_filament_in_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_load_filament_in_extruder(self, gcmd: GCodeCommand) -> bool:
         """Load the filament into the extruder.
 
@@ -2009,6 +2004,7 @@ class MMU3:
         return self.load_filament_in_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_retry_unload_filament_in_extruder(self, gcmd: GCodeCommand) -> bool:
         """Retry unload, try correct misalignment of bondtech gear.
 
@@ -2021,6 +2017,7 @@ class MMU3:
         return self.retry_unload_filament_in_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_unload_filament_in_extruder(self, gcmd: GCodeCommand) -> bool:
         """Unload the filament from the nozzle (without RAMMING !!!).
 
@@ -2036,6 +2033,7 @@ class MMU3:
         return self.unload_filament_in_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_eject_ramming(self, gcmd: GCodeCommand) -> bool:
         """Eject the filament with ramming from the extruder nozzle to the MMU3.
 
@@ -2048,6 +2046,7 @@ class MMU3:
         return self.eject_ramming()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_unload_filament_in_extruder_with_ramming(self, gcmd: GCodeCommand) -> bool:
         """Unload from extruder with ramming.
 
@@ -2060,6 +2059,7 @@ class MMU3:
         return self.unload_filament_in_extruder_with_ramming()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_load_filament_to_finda(self, gcmd: GCodeCommand) -> bool:
         """Load filament until the FINDA detect it.
 
@@ -2075,6 +2075,7 @@ class MMU3:
         return self.load_filament_to_finda()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_load_filament_from_finda_to_extruder(self, gcmd: GCodeCommand) -> bool:
         """Load from the FINDA to the extruder gear.
 
@@ -2087,6 +2088,7 @@ class MMU3:
         return self.load_filament_from_finda_to_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_load_filament_to_extruder(self, gcmd: GCodeCommand) -> bool:
         """Load from MMU3 to extruder gear by calling LOAD_FILAMENT_TO_FINDA.
 
@@ -2102,6 +2104,7 @@ class MMU3:
         return self.load_filament_to_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_unload_filament_from_finda(self, gcmd: GCodeCommand) -> bool:
         """Unload filament until the FINDA detect it.
 
@@ -2117,6 +2120,7 @@ class MMU3:
         return self.unload_filament_from_finda()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_unload_filament_from_extruder_to_finda(self, gcmd: GCodeCommand) -> bool:
         """Unload from extruder gear to the FINDA.
 
@@ -2129,6 +2133,7 @@ class MMU3:
         return self.unload_filament_from_extruder_to_finda()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_unload_filament_from_extruder(self, gcmd: GCodeCommand) -> bool:
         """Unload from the extruder gear to the MMU3.
 
@@ -2144,6 +2149,7 @@ class MMU3:
         return self.unload_filament_from_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_m702(self, gcmd: GCodeCommand) -> bool:
         """Unload filament if inserted into the IR sensor.
 
@@ -2170,6 +2176,7 @@ class MMU3:
         return True
 
     @gcmd_grabber
+    @auto_pause
     def cmd_eject_from_extruder(self, gcmd: GCodeCommand) -> bool:
         """Preheat the heater if needed and unload the filament with ramming.
 
@@ -2184,6 +2191,7 @@ class MMU3:
         return self.eject_from_extruder()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_eject_before_home(self, gcmd: GCodeCommand) -> bool:
         """Eject from extruder gear to MMU3.
 
@@ -2196,6 +2204,7 @@ class MMU3:
         return self.eject_before_home()
 
     @gcmd_grabber
+    @auto_pause
     def cmd_pulley_calibrate(self, gcmd: GCodeCommand) -> bool:
         """Calibrate pulley rotation_distance.
 
