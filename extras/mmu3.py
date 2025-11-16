@@ -751,10 +751,10 @@ class MMU3:
         Returns:
             bool: True if hotend is hot enough, False otherwise.
         """
-        self.display_status_msg("Checking if hotend is too cold")
+        self.display_status_msg("Checking hotend temperature")
         print_time = self.toolhead.get_last_move_time()
         if self.extruder_heater.get_temp(print_time)[0] < self.min_temp_extruder:
-            self.display_status_msg("Hotend is too cold")
+            self.display_status_msg("Hotend is cold!")
             return False
         return True
 
@@ -1159,9 +1159,7 @@ class MMU3:
             self.display_status_msg("MMU is paused")
             return False
 
-        print_time = self.toolhead.get_last_move_time()
-        if self.extruder_heater.get_temp(print_time)[0] < self.min_temp_extruder:
-            self.display_status_msg("Hotend is too cold")
+        if not self.validate_hotend_is_hot_enough():
             return False
 
         self.display_status_msg("Unloading Filament...")
