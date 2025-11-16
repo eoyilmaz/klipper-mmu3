@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import partial, wraps
+import time
 from typing import TYPE_CHECKING, Callable
 
 from extras.manual_stepper import ManualStepper
@@ -40,6 +41,42 @@ STEPPER_NAME_MAP = {
     SELECTOR_STEPPER_NAME: "Selector",
 }
 
+def measure_duration(f: Callable) -> Callable:
+    """Report command duration.
+
+    Args:
+        f (Callable): The function to decorate.
+
+    Returns:
+        Callable: The wrapped function.
+    """
+
+    @wraps(f)
+    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+        start_time = time.time()
+        result = f(self, gcmd, *args, **kwargs)
+        end_time = time.time()
+        duration = end_time - start_time
+        # condition the function name
+        f_name = {
+            "cmd_tx": "T",
+            "cmd_load_tool": "LT",
+            "cmd_unload_tool": "UT",
+            "cmd_select_tool": "SELECT_TOOL",
+            "cmd_unselect_tool": "UNSELECT_TOOL",
+            "cmd_pulley_calibrate": "PULLEY_CALIBRATE",
+            "cmd_home_mmu": "HOME_MMU",
+        }.get(f.__name__, f.__name__)
+        if f_name in ["T"]:
+            # replace with the proper command
+            f_name = f"{f_name}{kwargs['tool_id']}"
+        elif f_name in ["LT", "SELECT_TOOL"]:
+            tool_id = gcmd.get_int("VALUE", None)
+            f_name = f"{f_name} {tool_id}"
+        self.display_status_msg(f"{f_name} took {duration:0.1f} seconds")
+        return result
+
+    return wrapped_f
 
 def auto_pause(f: Callable) -> Callable:
     """Decorator to automatically pause the MMU3 on command failure.
@@ -55,7 +92,7 @@ def auto_pause(f: Callable) -> Callable:
     """
 
     @wraps(f)
-    def wrapped_f(self: object, gcmd: GCodeCommand, *args, **kwargs) -> None:
+    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
         result = f(self, gcmd, *args, **kwargs)
         if not result and not self.is_paused:
             self.pause()
@@ -1781,6 +1818,7 @@ class MMU3:
 
     @gcmd_grabber
     @auto_pause
+    @measure_duration
     def cmd_home_mmu(self, gcmd: GCodeCommand) -> bool:
         """Home the MMU.
 
@@ -1861,6 +1899,7 @@ class MMU3:
     # @store_failed_cmd
     @gcmd_grabber
     @auto_pause
+    @measure_duration
     def cmd_tx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
         """The generic Tx command.
 
@@ -1935,6 +1974,7 @@ class MMU3:
 
     @gcmd_grabber
     @auto_pause
+    @measure_duration
     def cmd_load_tool(self, gcmd: GCodeCommand) -> bool:
         """Load filament from MMU3 to nozzle.
 
@@ -1949,6 +1989,7 @@ class MMU3:
 
     @gcmd_grabber
     @auto_pause
+    @measure_duration
     def cmd_unload_tool(self, gcmd: GCodeCommand) -> bool:
         """Unload filament from nozzle to MMU3.
 
@@ -1962,6 +2003,7 @@ class MMU3:
 
     @gcmd_grabber
     @auto_pause
+    @measure_duration
     def cmd_select_tool(self, gcmd: GCodeCommand) -> bool:
         """Select a tool. move the idler and then move the selector (if needed).
 
@@ -1976,6 +2018,7 @@ class MMU3:
 
     @gcmd_grabber
     @auto_pause
+    @measure_duration
     def cmd_unselect_tool(self, gcmd: GCodeCommand) -> bool:
         """Unselect a tool, only park the idler.
 
@@ -2225,6 +2268,7 @@ class MMU3:
 
     @gcmd_grabber
     @auto_pause
+    @measure_duration
     def cmd_pulley_calibrate(self, gcmd: GCodeCommand) -> bool:
         """Calibrate pulley rotation_distance.
 
