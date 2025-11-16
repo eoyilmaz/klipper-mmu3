@@ -78,7 +78,7 @@ def gcmd_grabber(f: Callable) -> Callable:
     """
 
     @wraps(f)
-    def wrapped_f(self: object, gcmd: GCodeCommand, *args, **kwargs) -> None:
+    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
         self._gcmd = gcmd
         result = f(self, gcmd, *args, **kwargs)
         self._gcmd = None
@@ -301,7 +301,8 @@ class MMU3:
         self.extra_load_length = config.getfloat("extra_load_length", 0)
         # selector
         self.selector_speed = config.getfloat("selector_speed", 35)
-        self.selector_homing_speed = config.getfloat("selector_homing_speed", 5)
+        self.selector_homing_speed = config.getfloat("selector_homing_speed", 20)
+        self.selector_homing_speed_slow = config.getfloat("selector_homing_speed_slow", 5)
         self.selector_homing_move_length = config.getfloat(
             "selector_homing_move_length", -76
         )
@@ -806,9 +807,28 @@ class MMU3:
             )
             self.selector_stepper.do_set_position(0)
             self.toolhead.wait_moves()
+            # do a fast homing first
             self.selector_stepper.do_homing_move(
-                self.selector_homing_move_length,
+                -abs(self.selector_homing_move_length),
                 self.selector_homing_speed,
+                self.selector_accel,
+                True,
+                True,
+            )
+            # and then a slow homing
+            self.toolhead.wait_moves()
+            self.selector_stepper.do_set_position(0)
+            self.toolhead.wait_moves()
+            self.selector_stepper.do_move(
+                3,
+                self.selector_speed,
+                self.selector_accel,
+            )
+            self.selector_stepper.do_set_position(0)
+            self.toolhead.wait_moves()
+            self.selector_stepper.do_homing_move(
+                -abs(self.selector_homing_move_length),
+                self.selector_homing_speed_slow,
                 self.selector_accel,
                 True,
                 True,
