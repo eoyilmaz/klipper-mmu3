@@ -432,6 +432,8 @@ class MMU3:
     def register_commands(self) -> None:
         """Register new GCode commands."""
         self.gcode.register_command("PULLEY_CALIBRATE", self.cmd_pulley_calibrate)
+        self.gcode.register_command("SET_SELECTOR_POSITIONS", self.cmd_set_selector_positions)
+        self.gcode.register_command("SET_IDLER_POSITIONS", self.cmd_set_idler_positions)
         self.gcode.register_command(
             "LOAD_FILAMENT_TO_FINDA_IN_LOOP", self.cmd_load_filament_to_finda_in_loop
         )
@@ -2279,6 +2281,20 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         return self.pulley_calibrate()
+
+    @gcmd_grabber
+    def cmd_set_selector_positions(self, gcmd: GCodeCommand) -> bool:
+        """Set Selector positions."""
+        self.selector_positions = [
+            float(f.strip()) for f in gcmd.get("VALUE").split(",")
+        ]
+
+    @gcmd_grabber
+    def cmd_set_idler_positions(self, gcmd: GCodeCommand) -> bool:
+        """Set Idler positions."""
+        self.idler_positions= [
+            float(f.strip()) for f in gcmd.get("VALUE").split(",")
+        ]
 
 
 def load_config_prefix(config: ConfigWrapper) -> MMU3:
