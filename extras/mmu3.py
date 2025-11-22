@@ -1903,7 +1903,8 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        self.display_status_msg(f"Requested T{tool_id}")
+        previous_filament = self.current_filament
+        self.display_status_msg(f"T{previous_filament} => T{tool_id}")
 
         if self.current_filament == tool_id:
             return True
@@ -1936,10 +1937,10 @@ class MMU3:
                 break
             else:
                 # so the load did not happen...
-                self.respond_info(f"T{tool_id} failed!")
+                self.respond_info(f"T{previous_filament} => T{tool_id} failed!")
                 return False
 
-        self.display_status_msg(f"Done T{tool_id}")
+        self.display_status_msg(f"Done T{previous_filament} => T{tool_id}")
         return True
 
     @gcmd_grabber
