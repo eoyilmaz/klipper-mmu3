@@ -840,14 +840,6 @@ class MMU3:
         if not self.enable_no_selector_mode:
             self.display_status_msg("Homing selector")
             self.selector_stepper.do_set_position(0)
-            # move 1 slot right before homing
-            self.selector_stepper.do_move(
-                abs(self.selector_positions[1] - self.selector_positions[0]),
-                self.selector_speed,
-                self.selector_accel,
-            )
-            self.selector_stepper.do_set_position(0)
-            self.toolhead.wait_moves()
             # do a fast homing first
             self.selector_stepper.do_homing_move(
                 -abs(self.selector_homing_move_length),
@@ -859,7 +851,6 @@ class MMU3:
             # and then a slow homing
             self.toolhead.wait_moves()
             self.selector_stepper.do_set_position(0)
-            self.toolhead.wait_moves()
             self.selector_stepper.do_move(
                 3,
                 self.selector_speed,
