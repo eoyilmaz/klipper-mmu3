@@ -1754,7 +1754,6 @@ class MMU3:
         self.gcode.run_script_from_command(f"M109 S{min_temp}")
         if not self.unload_filament_from_hotend_with_ramming():
             return False
-        self.gcode.run_script_from_command("M104 S0")
         return True
 
     def eject_before_home(self) -> None:
