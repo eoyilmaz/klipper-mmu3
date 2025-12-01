@@ -623,6 +623,15 @@ class MMU3:
                 return endstop[0]
         return None
 
+    def get_extruder_temperature(self) -> float:
+        """Return the current extruder temperature.
+
+        Returns:
+            float: The current extruder temperature.
+        """
+        print_time = self.toolhead.get_last_move_time()
+        return self.extruder_heater.get_temp(print_time)[0]
+
     @property
     def filament_switch_sensor(self) -> SwitchSensor:
         """Return the SwitchSensor.
@@ -769,8 +778,7 @@ class MMU3:
             bool: True if hotend is hot enough, False otherwise.
         """
         self.respond_debug("Checking hotend temperature")
-        print_time = self.toolhead.get_last_move_time()
-        if self.extruder_heater.get_temp(print_time)[0] < self.min_temp_extruder:
+        if self.get_extruder_temperature() < self.min_temp_extruder:
             self.display_status_msg("Hotend is cold!")
             return False
         return True
@@ -944,8 +952,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        print_time = self.toolhead.get_last_move_time()
-        self.extruder_temp = self.extruder_heater.get_temp(print_time)[0]
+        self.extruder_temp = self.get_extruder_temperature()
         self.is_paused = True
         self.gcode.run_script_from_command(f"""
             SAVE_GCODE_STATE NAME=PAUSE_MMU_state
@@ -1075,8 +1082,7 @@ class MMU3:
             self.display_status_msg("Printer is paused ...")
             return False
 
-        print_time = self.toolhead.get_last_move_time()
-        if self.extruder_heater.get_temp(print_time)[0] < self.min_temp_extruder:
+        if self.get_extruder_temperature() < self.min_temp_extruder:
             self.display_status_msg("Hotend is not hot enough ...")
             return False
 
@@ -1744,10 +1750,7 @@ class MMU3:
 
         self.respond_debug("Filament in hotend, trying to eject it ...")
         self.respond_debug("Preheat Nozzle")
-        print_time = self.toolhead.get_last_move_time()
-        min_temp = max(
-            self.extruder_heater.get_temp(print_time)[0], self.extruder_eject_temp
-        )
+        min_temp = max(self.get_extruder_temperature(), self.extruder_eject_temp)
         self.gcode.run_script_from_command(f"M109 S{min_temp}")
         if not self.unload_filament_from_hotend_with_ramming():
             return False
