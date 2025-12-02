@@ -208,10 +208,10 @@ class FilamentMotionSensorManager:
 
     def __init__(
         self,
-        filament_motion_sensor: SwitchSensor,
+        filament_motion_sensor: EncoderSensor,
         desired_state: bool = False,
         respond_debug: None | Callable = None,
-        reactor: None | "Reactor" = None,  # noqa: UP037
+        reactor: None | Reactor = None,  # noqa: UP037
         toolhead: None | ToolHead = None,
     ) -> None:
         self.filament_motion_sensor = filament_motion_sensor
@@ -440,9 +440,6 @@ class MMU3:
         """Display the given status message in the LCD display."""
         # also send the message to the console
         self.respond_info(msg)
-        # if self.display_status is not None:
-        #     self.display_status.message = msg
-        #     self.display_status.progress
         self.gcode.run_script_from_command(f"M117 {msg}")
 
     def register_commands(self) -> None:
@@ -1919,7 +1916,6 @@ class MMU3:
         """
         return self.resume()
 
-    # @store_failed_cmd
     @gcmd_grabber
     @auto_pause
     @measure_duration
