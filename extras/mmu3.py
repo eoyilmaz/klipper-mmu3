@@ -926,7 +926,7 @@ class MMU3:
         Returns:
             bool: True, if filament loaded to FINDA, False otherwise.
         """
-        for i in range(self.finda_load_retry):
+        for i in range(int(self.finda_load_retry)):
             self.pulley_stepper.do_set_position(0)
             self.pulley_stepper.do_homing_move(
                 self.finda_load_length,
@@ -1516,7 +1516,7 @@ class MMU3:
         Returns:
             bool: True, if filament unloaded to FINDA, False otherwise.
         """
-        for i in range(self.finda_unload_retry):
+        for i in range(int(self.finda_unload_retry)):
             self.pulley_stepper.do_set_position(0)
             self.pulley_stepper.do_homing_move(
                 -self.finda_unload_length,
