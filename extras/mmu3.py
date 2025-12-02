@@ -1021,8 +1021,9 @@ class MMU3:
             return False
 
         if not self.is_homed:
-            self.display_status_msg("Could not select tool, MMU is not homed")
-            return False
+            self.display_status_msg("MMU is not homed, homing!")
+            if not self.home_mmu():
+                return False
 
         if tool_id is None or tool_id < 0:
             self.display_status_msg(f"Invalid tool id: {tool_id}")
@@ -1057,8 +1058,9 @@ class MMU3:
             return False
 
         if not self.is_homed:
-            self.display_status_msg("Could not unselect tool, MMU is not homed")
-            return False
+            self.display_status_msg("MMU is not homed, homing!")
+            if not self.home_mmu():
+                return False
 
         if self.current_tool is not None:
             self.respond_debug(f"Unselecting Tool T{self.current_tool}")
