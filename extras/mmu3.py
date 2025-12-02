@@ -1,12 +1,24 @@
 """MMU3 multi-material unit management."""
 
+# Standard Library Imports
 from __future__ import annotations
 
 from functools import partial, wraps
 import time
 from typing import TYPE_CHECKING, Callable
 
+# Klipper Imports
 from extras.manual_stepper import ManualStepper
+
+# Local Imports
+from extras.mainsail_prompts import (
+    Button,
+    ButtonGroup,
+    FooterButton,
+    Prompt,
+    Text,
+)
+
 
 if TYPE_CHECKING:
     import sys
@@ -1953,7 +1965,40 @@ class MMU3:
                 break
             else:
                 # so the load did not happen...
-                self.respond_debug(f"T{previous_filament} => T{tool_id} failed!")
+                if previous_filament is not None:
+                    error_message = f"T{previous_filament} => T{tool_id} failed!"
+                else:
+                    error_message = f"T{tool_id} failed!"
+                self.respond_debug(error_message)
+                self.disable_steppers()
+
+                # display a prompt in Mainsail UI
+                prompt = Prompt(
+                    headline="MMU Error",
+                    widgets=[
+                        Text(text=error_message),
+                        # Add possible commands,
+                        ButtonGroup(
+                            buttons=[
+                                Button(label="Unlock MMU", gcode="UNLOCK_MMU"),
+                                Button(label="Home MMU", gcode="HOME_MMU"),
+                            ],
+                        ),
+                        ButtonGroup(
+                            buttons=[
+                                Button(
+                                    label=f"Retry T{tool_id}",
+                                    gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=T{tool_id}"
+                                ),
+                            ],
+                        ),
+                        FooterButton(
+                            label=f"Resume",
+                            gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=RESUME",
+                        ),
+                    ]
+                )
+                self.gcode.run_script_from_command(prompt.to_gcode())
                 self.disable_steppers()
                 return False
 
