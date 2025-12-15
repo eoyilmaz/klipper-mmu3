@@ -1988,11 +1988,12 @@ class MMU3:
                         ButtonGroup(
                             buttons=[
                                 Button(label="Unlock MMU", gcode="UNLOCK_MMU"),
-                                Button(label="Home MMU", gcode="HOME_MMU"),
+                                Button(label="Unload Tool", gcode="UT"),
                             ],
                         ),
                         ButtonGroup(
                             buttons=[
+                                Button(label="Home MMU", gcode="HOME_MMU"),
                                 Button(
                                     label=f"Retry T{tool_id}",
                                     gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=T{tool_id}"
