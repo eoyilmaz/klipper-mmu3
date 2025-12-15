@@ -2408,11 +2408,11 @@ class MMU3:
         if "," in value:
             temp_value = []
             for v in value.split(","):
-                if v.isdigit():
+                if v.lstrip("-").isdigit():
                     v = float(v)
                 temp_value.append(v)
             value = temp_value
-        elif value.isdigit():
+        elif value.lstrip("-").isdigit():
             value = float(value)
         elif value.lower() in ["true", "false"]:
             value = True if value.lower() == "true" else False
