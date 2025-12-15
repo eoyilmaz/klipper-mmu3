@@ -169,7 +169,7 @@ class FilamentSwitchSensorManager:
         respond_debug: None | Callable = None,
     ) -> None:
         self.filament_switch_sensor = filament_switch_sensor
-        self.initial_state = None
+        self.initial_state = False
         self.desired_state = desired_state
         if respond_debug is None:
             respond_debug = print
