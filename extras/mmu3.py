@@ -928,7 +928,7 @@ class MMU3:
         self.is_homed = True
         self.respond_debug("Homing MMU ended ...")
 
-        self.disable_steppers()
+        # self.disable_steppers()
 
         return True
 
@@ -1986,7 +1986,7 @@ class MMU3:
                 else:
                     error_message = f"T{tool_id} failed!"
                 self.respond_debug(error_message)
-                self.disable_steppers()
+                # self.disable_steppers()
 
                 # display a prompt in Mainsail UI
                 prompt = Prompt(
@@ -2015,11 +2015,10 @@ class MMU3:
                     ]
                 )
                 self.gcode.run_script_from_command(prompt.to_gcode())
-                self.disable_steppers()
+                # self.disable_steppers()
                 return False
 
-        self.display_status_msg(f"Done T{previous_filament} => T{tool_id}")
-        self.disable_steppers()
+        # self.disable_steppers()
         return True
 
     @gcmd_grabber
