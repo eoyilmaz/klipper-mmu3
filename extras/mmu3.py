@@ -67,8 +67,7 @@ def measure_duration(f: Callable) -> Callable:
     def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
         start_time = time.time()
         result = f(self, gcmd, *args, **kwargs)
-        end_time = time.time()
-        duration = end_time - start_time
+        duration = time.time() - start_time
         # condition the function name
         f_name = {
             "cmd_tx": "T",
@@ -108,6 +107,25 @@ def auto_pause(f: Callable) -> Callable:
         result = f(self, gcmd, *args, **kwargs)
         if not result and not self.is_paused:
             self.pause()
+        return result
+
+    return wrapped_f
+
+
+def auto_disable_steppers(f: Callable) -> Callable:
+    """Decorator to disable steppers after running a command.
+
+    Args:
+        f (Callable): The function to wrap.
+
+    Returns:
+        Callable: The wrapped function.
+    """
+
+    @wraps(f)
+    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+        result = f(self, gcmd, *args, **kwargs)
+        self.disable_steppers()
         return result
 
     return wrapped_f
