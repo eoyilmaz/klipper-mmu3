@@ -1019,7 +1019,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        self.display_status_msg("Resume print")
+        self.display_status_msg("Unlocking MMU...")
         self.is_paused = False
         return self.home_idler()
 
