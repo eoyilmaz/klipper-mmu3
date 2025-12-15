@@ -2010,6 +2010,10 @@ class MMU3:
                 # self.disable_steppers()
                 return False
 
+        if previous_filament is not None:
+            self.display_status_msg(f"Done T{previous_filament} => T{tool_id}")
+        else:
+            self.display_status_msg(f"Done T{tool_id}")
         # self.disable_steppers()
         return True
 
