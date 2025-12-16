@@ -167,6 +167,8 @@ class FilamentSwitchSensorManager:
         filament_switch_sensor: SwitchSensor,
         desired_state: bool = False,
         respond_debug: None | Callable = None,
+        reactor: None | Reactor = None,  # noqa: UP037
+        toolhead: None | ToolHead = None,
     ) -> None:
         self.filament_switch_sensor = filament_switch_sensor
         self.initial_state = False
@@ -174,6 +176,8 @@ class FilamentSwitchSensorManager:
         if respond_debug is None:
             respond_debug = print
         self.respond_debug = respond_debug
+        self.reactor = reactor
+        self.toolhead = toolhead
 
     def __enter__(self) -> Self:
         """Enter to the context."""
@@ -888,7 +892,11 @@ class MMU3:
             bool: True, if homed, False otherwise.
         """
         with FilamentSwitchSensorManager(
-            self.filament_switch_sensor, False, self.respond_debug
+            self.filament_switch_sensor,
+            False,
+            self.respond_debug,
+            self.reactor,
+            self.toolhead
         ):
             self.is_homed = True
             self.respond_debug("Homing MMU ...")
@@ -1985,7 +1993,11 @@ class MMU3:
 
         with (
             FilamentSwitchSensorManager(
-                self.filament_switch_sensor, False, self.respond_debug
+                self.filament_switch_sensor,
+                False,
+                self.respond_debug,
+                self.reactor,
+                self.toolhead
             ),
             FilamentMotionSensorManager(
                 self.filament_motion_sensor,
