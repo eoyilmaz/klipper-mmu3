@@ -178,6 +178,12 @@ class FilamentSwitchSensorManager:
     def __enter__(self) -> Self:
         """Enter to the context."""
         if self.filament_switch_sensor:
+
+            # Synchronize: Wait for all queued moves to finish
+            # physically before we turn the sensor back on/off.
+            if self.toolhead:
+                self.toolhead.wait_moves()
+
             # store the state
             self.initial_state = (
                 self.filament_switch_sensor.runout_helper.sensor_enabled
@@ -205,6 +211,11 @@ class FilamentSwitchSensorManager:
         """
         if not self.filament_switch_sensor:
             return
+
+        # Synchronize: Wait for all queued moves to finish
+        # physically before we turn the sensor back on/off.
+        if self.toolhead:
+            self.toolhead.wait_moves()
 
         # restore the initial state
         self.respond_debug(
@@ -243,20 +254,33 @@ class FilamentMotionSensorManager:
 
     def __enter__(self) -> Self:
         """Enter to the context."""
-        if self.filament_motion_sensor:
-            # store the state
-            self.initial_state = (
-                self.filament_motion_sensor.runout_helper.sensor_enabled
+        if not self.filament_motion_sensor:
+            return self
+
+        # Synchronize: Wait for all queued moves to finish
+        # physically before we turn the sensor back on/off.
+        if self.toolhead:
+            self.toolhead.wait_moves()
+
+        # store the state
+        self.initial_state = (
+            self.filament_motion_sensor.runout_helper.sensor_enabled
+        )
+        self.respond_debug(
+            "{} filament motion sensor!".format(
+                "Enabling" if self.desired_state else "Disabling"
             )
-            self.respond_debug(
-                "{} filament motion sensor!".format(
-                    "Enabling" if self.desired_state else "Disabling"
-                )
-            )
-            # set the desired state
-            self.filament_motion_sensor.runout_helper.sensor_enabled = (
-                self.desired_state
-            )
+        )
+        # set the desired state
+        self.filament_motion_sensor.runout_helper.sensor_enabled = (
+            self.desired_state
+        )
+
+        # also update the event time
+        # so that the runout doesn't trigger as soon as it is enabled again
+        event_time = self.reactor.monotonic() or self.toolhead.get_last_move_time()
+        self.filament_motion_sensor.encoder_event(event_time, None)
+
         return self
 
     def __exit__(
@@ -271,6 +295,11 @@ class FilamentMotionSensorManager:
         """
         if not self.filament_motion_sensor:
             return
+
+        # Synchronize: Wait for all queued moves to finish
+        # physically before we turn the sensor back on/off.
+        if self.toolhead:
+            self.toolhead.wait_moves()
 
         # restore the initial state
         self.respond_debug(
@@ -1130,6 +1159,8 @@ class MMU3:
             G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
             G90
         """)
+        self.toolhead.wait_moves()
+
         self.pulley_stepper.do_set_position(0)
         return True
 
@@ -1165,6 +1196,7 @@ class MMU3:
             G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
             G90
         """)
+        self.toolhead.wait_moves()
         self.pulley_stepper.do_set_position(0)
         if not self.is_filament_present_in_extruder:
             for _ in range(self.load_retry):
@@ -1184,6 +1216,7 @@ class MMU3:
                 G1 E{self.extra_load_length} F6000
                 G90
             """)
+            self.toolhead.wait_moves()
 
         self.respond_debug("Load Complete")
         return True
@@ -1209,6 +1242,7 @@ class MMU3:
             G92 E0
             G90
         """)
+        self.toolhead.wait_moves()
         return True
 
     def unload_filament_from_hotend(self) -> bool:
@@ -1245,6 +1279,7 @@ class MMU3:
             G92 E0
             G4 P1000
         """)
+        self.toolhead.wait_moves()
 
         if self.is_filament_present_in_extruder:
             for _ in range(self.unload_retry):
@@ -1259,6 +1294,7 @@ class MMU3:
     def ramming_slicer(self) -> None:
         """Call the ramming process."""
         self.gcode.run_script_from_command("RAMMING_SLICER")
+        self.toolhead.wait_moves()
 
     def eject_ramming(self) -> bool:
         """Eject the filament with ramming from the extruder nozzle to the MMU3.
@@ -1300,6 +1336,7 @@ class MMU3:
 
         if self.enable_filament_cutter:
             self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
+            self.toolhead.wait_moves()
         else:
             self.ramming_slicer()
 
@@ -1660,6 +1697,7 @@ class MMU3:
             SET_TMC_FIELD STEPPER={stepper_name} FIELD=SGTHRS VALUE=0
             SET_TMC_CURRENT STEPPER={stepper_name} CURRENT={self.cut_stepper_current}
         """)
+        self.toolhead.wait_moves()
 
         # do cut
         self.selector_stepper.do_move(
@@ -1744,6 +1782,7 @@ class MMU3:
             self.respond_debug(f"Cut T{self.current_filament}")
             # cut the filament in extruder
             self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
+            self.toolhead.wait_moves()
 
         self.respond_debug(f"UT {self.current_filament}")
         if not self.unload_filament_from_hotend():
