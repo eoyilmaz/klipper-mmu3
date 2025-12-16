@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from functools import partial, wraps
+import re
 import time
 from typing import TYPE_CHECKING, Callable
 
@@ -52,6 +53,9 @@ STEPPER_NAME_MAP = {
     PULLEY_STEPPER_NAME: "FINDA",
     SELECTOR_STEPPER_NAME: "Selector",
 }
+
+IS_DIGIT = re.compile("[0-9\-.]+")
+
 
 def measure_duration(f: Callable) -> Callable:
     """Report command duration.
@@ -2459,11 +2463,11 @@ class MMU3:
         if "," in value:
             temp_value = []
             for v in value.split(","):
-                if v.lstrip("-").isdigit():
+                if IS_DIGIT.match(v):
                     v = float(v)
                 temp_value.append(v)
             value = temp_value
-        elif value.lstrip("-").isdigit():
+        elif IS_DIGIT.match(v):
             value = float(value)
         elif value.lower() in ["true", "false"]:
             value = True if value.lower() == "true" else False
