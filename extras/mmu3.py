@@ -414,17 +414,23 @@ class MMU3:
         self.selector_positions = [
             float(f.strip())
             for f in config.getlist(
-                "selector_positions", [73.5, 59.375, 45.25, 31.125, 17, 0]
+                "selector_positions",
+                [str(v) for v in [73.5, 59.375, 45.25, 31.125, 17, 0]]
             )
         ]
         # idler
         self.idler_positions = [
             float(f.strip())
-            for f in config.getlist("idler_positions", [5, 20, 35, 50, 65, 85])
+            for f in config.getlist(
+                "idler_positions",
+                [str(v) for v in [5, 20, 35, 50, 65, 85]]
+            )
         ]
         self.idler_homing_move_lengths = [
             float(f.strip())
-            for f in config.getlist("idler_homing_move_lengths", [7, -95])
+            for f in config.getlist(
+                "idler_homing_move_lengths", [str(v) for v in [7, -95]]
+            )
         ]
         self.idler_homing_speed = config.getfloat("idler_homing_speed", 100)
         self.idler_homing_accel = config.getfloat("idler_homing_accel", 80)
@@ -442,7 +448,11 @@ class MMU3:
             config.getint("pause_after_disabling_steppers", 250) / 1000.0
         )
         self.pause_position = [
-            float(f.strip()) for f in config.getlist("pause_position", [0, 200, 10])
+            float(f.strip())
+            for f in config.getlist(
+                "pause_position",
+                [str(v) for v in [0, 200, 10]]
+            )
         ]
         # temperature
         self.min_temp_extruder = config.getint("min_temp_extruder", 180)
