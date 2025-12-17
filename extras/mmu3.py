@@ -2464,7 +2464,7 @@ class MMU3:
                     v = float(v)
                 temp_value.append(v)
             value = temp_value
-        elif IS_DIGIT.match(v):
+        elif IS_DIGIT.match(value):
             value = float(value)
         elif value.lower() in ["true", "false"]:
             value = True if value.lower() == "true" else False
