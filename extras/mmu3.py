@@ -372,6 +372,13 @@ class MMU3:
         # are we in debug mode
         self.debug = config.getboolean("debug", False)
         self.number_of_tools = config.getint("number_of_tools", 5)
+        self.tool_mapping = [
+            int(f.strip())
+            for f in config.getlist(
+                "tool_mapping", [str(v) for v in range(self.number_of_tools)]
+            )
+        ]
+
         # timeouts
         self.timeout_pause = config.getint("timeout_pause", 36000)
         self.disable_heater = config.getint("disable_heater", 600)
@@ -682,6 +689,17 @@ class MMU3:
         if not self._mcu:
             self._mcu = self.pulley_stepper_endstop.get_mcu()
         return self._mcu
+
+    def get_mapped_tool_id(self, tool_id: int) -> int:
+        """Return the mapped tool id.
+
+        Args:
+            tool_id (int): The original tool id.
+
+        Returns:
+            int: The mapped tool id.
+        """
+        return self.tool_mapping[tool_id]
 
     def get_endstop(self, endstop_name: str) -> None | MCU_endstop:
         """Return the endstop with the given name.
