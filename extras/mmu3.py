@@ -1,6 +1,6 @@
 """MMU3 multi-material unit management."""
 
-# Standard Library Imports
+# Standard Library Imports
 from __future__ import annotations
 
 from functools import partial, wraps
@@ -8,10 +8,10 @@ import re
 import time
 from typing import TYPE_CHECKING, Callable
 
-# Klipper Imports
+# Klipper Imports
 from extras.manual_stepper import ManualStepper
 
-# Local Imports
+# Local Imports
 from extras.mainsail_prompts import (
     Button,
     ButtonGroup,
@@ -83,7 +83,7 @@ def measure_duration(f: Callable) -> Callable:
             "cmd_home_mmu": "HOME_MMU",
         }.get(f.__name__, f.__name__)
         if f_name in ["T"]:
-            # replace with the proper command
+            # replace with the proper command
             f_name = f"{f_name}{kwargs['tool_id']}"
         elif f_name in ["LT", "SELECT_TOOL"]:
             tool_id = gcmd.get_int("VALUE", None)
@@ -92,6 +92,7 @@ def measure_duration(f: Callable) -> Callable:
         return result
 
     return wrapped_f
+
 
 def auto_pause(f: Callable) -> Callable:
     """Decorator to automatically pause the MMU3 on command failure.
@@ -186,7 +187,6 @@ class FilamentSwitchSensorManager:
     def __enter__(self) -> Self:
         """Enter to the context."""
         if self.filament_switch_sensor:
-
             # Synchronize: Wait for all queued moves to finish
             # physically before we turn the sensor back on/off.
             if self.toolhead:
@@ -271,18 +271,14 @@ class FilamentMotionSensorManager:
             self.toolhead.wait_moves()
 
         # store the state
-        self.initial_state = (
-            self.filament_motion_sensor.runout_helper.sensor_enabled
-        )
+        self.initial_state = self.filament_motion_sensor.runout_helper.sensor_enabled
         self.respond_debug(
             "{} filament motion sensor!".format(
                 "Enabling" if self.desired_state else "Disabling"
             )
         )
         # set the desired state
-        self.filament_motion_sensor.runout_helper.sensor_enabled = (
-            self.desired_state
-        )
+        self.filament_motion_sensor.runout_helper.sensor_enabled = self.desired_state
 
         # also update the event time
         # so that the runout doesn't trigger as soon as it is enabled again
@@ -413,7 +409,9 @@ class MMU3:
         # selector
         self.selector_speed = config.getfloat("selector_speed", 35)
         self.selector_homing_speed = config.getfloat("selector_homing_speed", 20)
-        self.selector_homing_speed_slow = config.getfloat("selector_homing_speed_slow", 5)
+        self.selector_homing_speed_slow = config.getfloat(
+            "selector_homing_speed_slow", 5
+        )
         self.selector_homing_move_length = config.getfloat(
             "selector_homing_move_length", -76
         )
@@ -422,15 +420,14 @@ class MMU3:
             float(f.strip())
             for f in config.getlist(
                 "selector_positions",
-                [str(v) for v in [73.5, 59.375, 45.25, 31.125, 17, 0]]
+                [str(v) for v in [73.5, 59.375, 45.25, 31.125, 17, 0]],
             )
         ]
         # idler
         self.idler_positions = [
             float(f.strip())
             for f in config.getlist(
-                "idler_positions",
-                [str(v) for v in [5, 20, 35, 50, 65, 85]]
+                "idler_positions", [str(v) for v in [5, 20, 35, 50, 65, 85]]
             )
         ]
         self.idler_homing_move_lengths = [
@@ -456,10 +453,7 @@ class MMU3:
         )
         self.pause_position = [
             float(f.strip())
-            for f in config.getlist(
-                "pause_position",
-                [str(v) for v in [0, 200, 10]]
-            )
+            for f in config.getlist("pause_position", [str(v) for v in [0, 200, 10]])
         ]
         # temperature
         self.min_temp_extruder = config.getint("min_temp_extruder", 180)
@@ -517,7 +511,9 @@ class MMU3:
     def register_commands(self) -> None:
         """Register new GCode commands."""
         self.gcode.register_command("PULLEY_CALIBRATE", self.cmd_pulley_calibrate)
-        self.gcode.register_command("SET_SELECTOR_POSITIONS", self.cmd_set_selector_positions)
+        self.gcode.register_command(
+            "SET_SELECTOR_POSITIONS", self.cmd_set_selector_positions
+        )
         self.gcode.register_command("SET_IDLER_POSITIONS", self.cmd_set_idler_positions)
         self.gcode.register_command("GET_MMU_PARAM", self.cmd_get_mmu_param)
         self.gcode.register_command("SET_MMU_PARAM", self.cmd_set_mmu_param)
@@ -760,7 +756,9 @@ class MMU3:
         start_time = time.time()
         return_value = self.filament_switch_sensor.get_status(None)["filament_detected"]
         duration = time.time() - start_time
-        self.respond_debug(f"is_filament_present_in_extruder took {duration:0.1f} seconds")
+        self.respond_debug(
+            f"is_filament_present_in_extruder took {duration:0.1f} seconds"
+        )
         return return_value
 
     @property
@@ -928,7 +926,7 @@ class MMU3:
             False,
             self.respond_debug,
             self.reactor,
-            self.toolhead
+            self.toolhead,
         ):
             self.is_homed = True
             self.respond_debug("Homing MMU ...")
@@ -959,7 +957,7 @@ class MMU3:
         if not self.enable_no_selector_mode:
             self.respond_debug("Homing selector")
             self.selector_stepper.do_set_position(0)
-            # do a fast homing first
+            # do a fast homing first
             self.selector_stepper.do_homing_move(
                 -abs(self.selector_homing_move_length),
                 self.selector_homing_speed,
@@ -967,7 +965,7 @@ class MMU3:
                 True,
                 True,
             )
-            # and then a slow homing
+            # and then a slow homing
             self.toolhead.wait_moves()
             self.selector_stepper.do_set_position(0)
             self.selector_stepper.do_move(
@@ -1023,9 +1021,7 @@ class MMU3:
 
             # check endstop status and exit from the loop
             if self.is_filament_in_finda:
-                self.respond_debug(
-                    "FINDA endstop triggered. Exiting filament load."
-                )
+                self.respond_debug("FINDA endstop triggered. Exiting filament load.")
                 return True
             self.respond_debug(f"FINDA endstop not triggered. Retrying... {i + 1}")
         self.display_status_msg(
@@ -1614,9 +1610,7 @@ class MMU3:
 
             # check endstop status and exit from the loop
             if not self.is_filament_in_finda:
-                self.respond_debug(
-                    "FINDA endstop triggered. Exiting filament unload."
-                )
+                self.respond_debug("FINDA endstop triggered. Exiting filament unload.")
                 return True
             self.respond_debug(f"FINDA endstop not triggered. Retrying... {i + 1}")
         self.display_status_msg(
@@ -2018,7 +2012,12 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         previous_filament = self.current_filament
-        self.display_status_msg(f"T{previous_filament} => T{tool_id}")
+
+        if previous_filament is not None:
+            status_message = f"Start T{previous_filament} => T{tool_id}"
+        else:
+            status_message = f"Start T{tool_id}"
+        self.display_status_msg(status_message)
 
         if self.current_filament == tool_id:
             return True
@@ -2029,7 +2028,7 @@ class MMU3:
                 False,
                 self.respond_debug,
                 self.reactor,
-                self.toolhead
+                self.toolhead,
             ),
             FilamentMotionSensorManager(
                 self.filament_motion_sensor,
@@ -2040,7 +2039,9 @@ class MMU3:
             ),
         ):
             for i in range(self.tool_change_retry):
-                self.display_status_msg(f"T{tool_id} ({i})...")
+                if i > 0:
+                    self.display_status_msg(f"Retry ({i + 1}): T{tool_id}...")
+
                 if not self.unload_tool():
                     self.respond_debug(f"Unload T{self.current_filament} failed!")
                     continue
@@ -2062,12 +2063,12 @@ class MMU3:
                 self.respond_debug(error_message)
                 # self.disable_steppers()
 
-                # display a prompt in Mainsail UI
+                # display a prompt in Mainsail UI
                 prompt = Prompt(
                     headline="MMU Error",
                     widgets=[
                         Text(text=error_message),
-                        # Add possible commands,
+                        # Add possible commands,
                         ButtonGroup(
                             buttons=[
                                 Button(label="Unlock MMU", gcode="UNLOCK_MMU"),
@@ -2079,7 +2080,7 @@ class MMU3:
                                 Button(label="Home MMU", gcode="HOME_MMU"),
                                 Button(
                                     label=f"Retry T{tool_id}",
-                                    gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=T{tool_id}"
+                                    gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=T{tool_id}",
                                 ),
                             ],
                         ),
@@ -2087,7 +2088,7 @@ class MMU3:
                             label=f"Resume",
                             gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=RESUME",
                         ),
-                    ]
+                    ],
                 )
                 self.gcode.run_script_from_command(prompt.to_gcode())
                 # self.disable_steppers()
@@ -2455,9 +2456,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        self.idler_positions= [
-            float(f.strip()) for f in gcmd.get("VALUE").split(",")
-        ]
+        self.idler_positions = [float(f.strip()) for f in gcmd.get("VALUE").split(",")]
 
     @gcmd_grabber
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
@@ -2469,7 +2468,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        param : str = gcmd.get("PARAM")
+        param: str = gcmd.get("PARAM")
         if hasattr(self, param):
             value = getattr(self, param)
             self.display_status_msg(f"{param}: {value}")
@@ -2486,8 +2485,8 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        param : str = gcmd.get("PARAM")
-        value : str = gcmd.get("VALUE")
+        param: str = gcmd.get("PARAM")
+        value: str = gcmd.get("VALUE")
         if "," in value:
             temp_value = []
             for v in value.split(","):
