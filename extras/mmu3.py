@@ -511,10 +511,6 @@ class MMU3:
     def register_commands(self) -> None:
         """Register new GCode commands."""
         self.gcode.register_command("PULLEY_CALIBRATE", self.cmd_pulley_calibrate)
-        self.gcode.register_command(
-            "SET_SELECTOR_POSITIONS", self.cmd_set_selector_positions
-        )
-        self.gcode.register_command("SET_IDLER_POSITIONS", self.cmd_set_idler_positions)
         self.gcode.register_command("GET_MMU_PARAM", self.cmd_get_mmu_param)
         self.gcode.register_command("SET_MMU_PARAM", self.cmd_set_mmu_param)
         self.gcode.register_command(
@@ -2431,32 +2427,6 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         return self.pulley_calibrate()
-
-    @gcmd_grabber
-    def cmd_set_selector_positions(self, gcmd: GCodeCommand) -> bool:
-        """Set Selector positions.
-
-        Args:
-            gcmd (GCodeCommand): The G-Code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        self.selector_positions = [
-            float(f.strip()) for f in gcmd.get("VALUE").split(",")
-        ]
-
-    @gcmd_grabber
-    def cmd_set_idler_positions(self, gcmd: GCodeCommand) -> bool:
-        """Set Idler positions.
-
-        Args:
-            gcmd (GCodeCommand): The G-Code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        self.idler_positions = [float(f.strip()) for f in gcmd.get("VALUE").split(",")]
 
     @gcmd_grabber
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
