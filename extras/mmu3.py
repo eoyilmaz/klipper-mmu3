@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from kinematics.extruder import PrinterExtruder
     from klippy import Printer
     from mcu import MCU_endstop
-    from reactor import Reactor
+    from reactor import PollReactor as Reactor
     from toolhead import ToolHead
 
 
@@ -335,7 +335,7 @@ class MMU3:
         self.query_endstops: QueryEndstops = self.printer.load_object(
             config, "query_endstops"
         )
-        self.reactor = self.printer.get_reactor()
+        self.reactor : Reactor = self.printer.get_reactor()
 
         self._mcu = None
         self._toolhead = None
