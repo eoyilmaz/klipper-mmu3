@@ -3,6 +3,8 @@
 # Standard Library Imports
 from __future__ import annotations
 
+import configparser
+import contextlib
 from functools import partial, wraps
 import re
 import time
@@ -737,9 +739,10 @@ class MMU3:
             EncoderSensor: The switch sensor.
         """
         if self._filament_motion_sensor is None:
-            self._filament_motion_sensor = self.printer.lookup_object(
-                self.filament_motion_sensor_name
-            )
+            with contextlib.suppress(configparser.Error):
+                self._filament_motion_sensor = self.printer.lookup_object(
+                    self.filament_motion_sensor_name
+                )
         return self._filament_motion_sensor
 
     @property
