@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import configparser
 import contextlib
-from functools import partial, wraps
+import enum
 import re
 import time
+from functools import partial, wraps
 from typing import TYPE_CHECKING, Callable
-
-# Klipper Imports
-from extras.manual_stepper import ManualStepper
 
 # Local Imports
 from extras.mainsail_prompts import (
@@ -22,6 +20,8 @@ from extras.mainsail_prompts import (
     Text,
 )
 
+# Klipper Imports
+from extras.manual_stepper import ManualStepper
 
 if TYPE_CHECKING:
     import sys
@@ -34,17 +34,19 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from configfile import ConfigWrapper
-    from extras.display_status import DisplayStatus
-    from extras.filament_motion_sensor import EncoderSensor
-    from extras.filament_switch_sensor import SwitchSensor
-    from extras.heaters import Heater, PrinterHeaters
-    from extras.query_endstops import QueryEndstops
     from gcode import GCodeCommand, GCodeDispatch
     from kinematics.extruder import PrinterExtruder
     from klippy import Printer
     from mcu import MCU_endstop
     from reactor import PollReactor as Reactor
     from toolhead import ToolHead
+
+    from extras.display_status import DisplayStatus
+    from extras.filament_motion_sensor import EncoderSensor
+    from extras.filament_switch_sensor import SwitchSensor
+    from extras.gcode_move import GCodeMove
+    from extras.heaters import Heater, PrinterHeaters
+    from extras.query_endstops import QueryEndstops
 
 
 IDLER_STEPPER_NAME = "manual_stepper idler_stepper"
@@ -119,46 +121,58 @@ def auto_pause(f: Callable) -> Callable:
     return wrapped_f
 
 
-def auto_disable_steppers(f: Callable) -> Callable:
-    """Decorator to disable steppers after running a command.
+class SwitchSensorPosition(enum.Enum):
+    PreGears = "pre_gears"
+    OnGears = "on_gears"
+    PostGears = "post_gears"
 
-    Args:
-        f (Callable): The function to wrap.
+    def __repr__(self) -> str:
+        """Return the enum name for str().
 
-    Returns:
-        Callable: The wrapped function.
-    """
+        Returns:
+            str: The name as the string representation.
+        """
+        return self.name
 
-    @wraps(f)
-    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
-        result = f(self, gcmd, *args, **kwargs)
-        self.disable_steppers()
-        return result
+    __str__ = __repr__
 
-    return wrapped_f
+    @classmethod
+    def to_switch_sensor_position(
+        cls, position: str | SwitchSensorPosition
+    ) -> SwitchSensorPosition:
+        """Convert the given position value to a SwitchSensorPosition enum.
 
+        Args:
+            position (str | SwitchSensorPosition]): The value to convert to a
+                SwitchSensorPosition.
 
-def gcmd_grabber(f: Callable) -> Callable:
-    """Decorator to grab the gcmd arg temporarily from command methods.
+        Raises:
+            TypeError: Input value type is invalid.
+            ValueError: Input value is invalid.
 
-    This allows non-command methods to use the respond_info and respond_debug
-    methods.
+        Returns:
+            SwitchSensorPosition: The enum.
+        """
+        if not isinstance(position, (str, SwitchSensorPosition)):
+            raise TypeError(
+                "position should be a SwitchSensorPosition enum value or one of "
+                f"{[m.name for m in cls] + [e.value for e in cls]}, "
+                f"not {position.__class__.__name__}: '{position}'"
+            )
+        if isinstance(position, str):
+            position_name_lut = {e.name.lower(): e.name for e in cls}
+            position_name_lut.update({e.value: e.name for e in cls})
+            position_lower_case = position.lower()
+            if position_lower_case not in position_name_lut:
+                raise ValueError(
+                    "position should be a SwitchSensorPosition enum value or one of "
+                    f"{[e.name for e in cls] + [e.value for e in cls]}, "
+                    f"not '{position}'"
+                )
 
-    Args:
-        f (Callable): The function to wrap.
+            return cls.__members__[position_name_lut[position_lower_case]]
 
-    Returns:
-        Callable: The wrapped function.
-    """
-
-    @wraps(f)
-    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
-        self._gcmd = gcmd
-        result = f(self, gcmd, *args, **kwargs)
-        self._gcmd = None
-        return result
-
-    return wrapped_f
+        return position
 
 
 class FilamentSwitchSensorManager:
@@ -247,7 +261,7 @@ class FilamentMotionSensorManager:
 
     def __init__(
         self,
-        filament_motion_sensor: EncoderSensor,
+        filament_motion_sensor: None | EncoderSensor,
         desired_state: bool = False,
         respond_debug: None | Callable = None,
         reactor: None | Reactor = None,  # noqa: UP037
@@ -334,27 +348,31 @@ class MMU3:
 
         self.printer: Printer = config.get_printer()
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
+        self.gcode_move: None | GCodeMove = None
         self.query_endstops: QueryEndstops = self.printer.load_object(
             config, "query_endstops"
         )
-        self.reactor : Reactor = self.printer.get_reactor()
+        self.reactor: Reactor = self.printer.get_reactor()
 
-        self._mcu = None
-        self._toolhead = None
-        self._extruder = None
-        self._extruder_heater = None
-        self._heaters = None
-        self._idler_stepper = None
+        self.mcu: None | MCU_endstop = None
+        self.toolhead: None | ToolHead = None
+        self.extruder: None | PrinterExtruder = None
+        self.extruder_heater: None | Heater = None
+        self.heaters: None | PrinterHeaters = None
+        self.idler_stepper: None | ManualStepper = None
         self._idler_stepper_endstop = None
-        self._pulley_stepper = None
-        self._pulley_stepper_endstop = None
-        self._selector_stepper = None
-        self._selector_stepper_endstop = None
-        self._display_status = None
+        self.pulley_stepper: None | ManualStepper = None
+        self.pulley_stepper_endstop: None | MCU_endstop = None
+        self.selector_stepper: None | ManualStepper = None
+        self.selector_stepper_endstop: None | MCU_endstop = None
+        self.display_status: None | DisplayStatus = None
+        self.filament_switch_sensor: None | SwitchSensor = None
+        self.filament_switch_sensor_position: None | SwitchSensorPosition = None
+        self.filament_motion_sensor: None | EncoderSensor = None
 
         # state variables
         self.debug = False
-        self._gcmd = None
+
         self.is_paused = False
         self.is_homed = False
         self.extruder_temp = None
@@ -370,12 +388,10 @@ class MMU3:
         # are we in debug mode
         self.debug = config.getboolean("debug", False)
         self.number_of_tools = config.getint("number_of_tools", 5)
-        self.tool_mapping = [
-            int(f.strip())
-            for f in config.getlist(
-                "tool_mapping", [str(v) for v in range(self.number_of_tools)]
-            )
-        ]
+        self.tool_mapping = config.getintlist(
+            "tool_mapping",
+            list(range(self.number_of_tools)),
+        )
 
         # timeouts
         self.timeout_pause = config.getint("timeout_pause", 36000)
@@ -392,6 +408,9 @@ class MMU3:
         self.bowden_unload_length = config.getfloat("bowden_unload_length", 830)
         self.bowden_unload_speed = config.getint("bowden_unload_speed", 120)
         self.bowden_unload_accel = config.getint("bowden_unload_accel", 120)
+        # hotend unload
+        self.hotend_unload_length = config.getfloat("hotend_unload_length", 50)
+        self.hotend_unload_speed = config.getint("hotend_unload_speed", 100)
         # FINDA load/unload
         self.finda_load_retry = config.getint("finda_load_retry", 20)
         self.finda_load_length = config.getfloat("finda_load_length", 120)
@@ -418,26 +437,19 @@ class MMU3:
             "selector_homing_move_length", -76
         )
         self.selector_accel = config.getfloat("selector_accel", 200)
-        self.selector_positions = [
-            float(f.strip())
-            for f in config.getlist(
-                "selector_positions",
-                [str(v) for v in [73.5, 59.375, 45.25, 31.125, 17, 0]],
-            )
-        ]
+        self.selector_positions = config.getfloatlist(
+            "selector_positions",
+            [73.5, 59.375, 45.25, 31.125, 17, 0],
+        )
         # idler
-        self.idler_positions = [
-            float(f.strip())
-            for f in config.getlist(
-                "idler_positions", [str(v) for v in [5, 20, 35, 50, 65, 85]]
-            )
-        ]
-        self.idler_homing_move_lengths = [
-            float(f.strip())
-            for f in config.getlist(
-                "idler_homing_move_lengths", [str(v) for v in [7, -95]]
-            )
-        ]
+        self.idler_positions = config.getfloatlist(
+            "idler_positions",
+            [5, 20, 35, 50, 65, 85],
+        )
+        self.idler_homing_move_lengths = config.getfloatlist(
+            "idler_homing_move_lengths",
+            [7, -95],
+        )
         self.idler_homing_speed = config.getfloat("idler_homing_speed", 100)
         self.idler_homing_accel = config.getfloat("idler_homing_accel", 80)
         self.idler_speed = config.getfloat("idler_speed", 100)
@@ -453,10 +465,7 @@ class MMU3:
         self.pause_after_disabling_steppers = (
             config.getint("pause_after_disabling_steppers", 250) / 1000.0
         )
-        self.pause_position = [
-            float(f.strip())
-            for f in config.getlist("pause_position", [str(v) for v in [0, 200, 10]])
-        ]
+        self.pause_position = config.getfloatlist("pause_position", [0, 200, 10])
         # temperature
         self.min_temp_extruder = config.getint("min_temp_extruder", 180)
         self.extruder_eject_temp = config.getint("extruder_eject_temp", 200)
@@ -468,17 +477,59 @@ class MMU3:
         self.load_retry = config.getint("load_retry", 5)
         self.unload_retry = config.getint("unload_retry", 5)
         self.tool_change_retry = config.getint("tool_change_retry", 5)
+        self.filament_switch_sensor_position = (
+            SwitchSensorPosition.to_switch_sensor_position(
+                config.get(
+                    "filament_switch_sensor_position", SwitchSensorPosition.OnGears
+                )
+            )
+        )
         self.filament_switch_sensor_name = config.get(
-            "filament_switch_sensor_name", "filament_switch_sensor my_filament_sensor"
+            "filament_switch_sensor_name",
+            "filament_switch_sensor my_filament_sensor",
         )
-        self._filament_switch_sensor = None
+
         self.filament_motion_sensor_name = config.get(
-            "filament_motion_sensor_name", "filament_motion_sensor encoder_sensor"
+            "filament_motion_sensor_name",
+            "filament_motion_sensor encoder_sensor",
         )
-        self._filament_motion_sensor = None
 
         # register commands
         self.register_commands()
+        self.printer.register_event_handler("klippy:connect", self._connect)
+
+    def _connect(self) -> None:
+        """Handle klippy:connect event."""
+        self.toolhead: ToolHead = self.printer.lookup_object("toolhead")
+        self.gcode_move: GCodeMove = self.printer.lookup_object("gcode_move")
+        self.extruder: PrinterExtruder = self.toolhead.get_extruder()
+        self.heaters: PrinterHeaters = self.printer.lookup_object("heaters")
+        self.extruder_heater: Heater = self.heaters.lookup_heater("extruder")
+        self.idler_stepper: ManualStepper = self.printer.lookup_object(
+            IDLER_STEPPER_NAME
+        )
+        self.pulley_stepper: ManualStepper = self.printer.lookup_object(
+            PULLEY_STEPPER_NAME
+        )
+        self.pulley_stepper_endstop: MCU_endstop = self.get_endstop(PULLEY_STEPPER_NAME)
+        self.selector_stepper: ManualStepper = self.printer.lookup_object(
+            SELECTOR_STEPPER_NAME
+        )
+        self.selector_stepper_endstop: MCU_endstop = self.get_endstop(
+            SELECTOR_STEPPER_NAME
+        )
+        self.mcu: MCU_endstop = self.pulley_stepper_endstop.get_mcu()
+        self.filament_switch_sensor: SwitchSensor = self.printer.lookup_object(
+            self.filament_switch_sensor_name
+        )
+
+        with contextlib.suppress(configparser.Error):
+            self.filament_motion_sensor: EncoderSensor = self.printer.lookup_object(
+                self.filament_motion_sensor_name
+            )
+        self.display_status: DisplayStatus = self.printer.lookup_object(
+            "display_status"
+        )
 
     def respond_info(self, msg: str) -> None:
         """Respond info through the current GCodeCommand instance.
@@ -486,10 +537,7 @@ class MMU3:
         Args:
             msg (str): The info message.
         """
-        if self._gcmd is None:
-            self.gcode.respond_info(f"MMU3: {msg}")
-        else:
-            self._gcmd.respond_info(f"MMU3: {msg}")
+        self.gcode.respond_info(f"MMU3: {msg}")
 
     def respond_debug(self, msg: str) -> None:
         """Respond debug through the current GCodeCommand instance.
@@ -499,10 +547,7 @@ class MMU3:
         """
         if not self.debug:
             return
-        if self._gcmd is None:
-            self.gcode.respond_info(f"MMU3: {msg}")
-        else:
-            self._gcmd.respond_info(f"MMU3: {msg}")
+        self.gcode.respond_info(f"MMU3: {msg}")
 
     def display_status_msg(self, msg: str) -> None:
         """Display the given status message in the LCD display."""
@@ -576,114 +621,6 @@ class MMU3:
         self.gcode.register_command("EJECT_FROM_EXTRUDER", self.cmd_eject_from_extruder)
         self.gcode.register_command("EJECT_BEFORE_HOME", self.cmd_eject_before_home)
 
-    @property
-    def display_status(self) -> DisplayStatus:
-        """Return the DisplayStatus instance.
-
-        Returns:
-            DisplayStatus: The LCD display to set messages.
-        """
-        if self._display_status is None:
-            self._display_status = self.printer.lookup_object("display_status")
-
-    @property
-    def toolhead(self) -> ToolHead:
-        """Return the toolhead.
-
-        Returns:
-            ToolHead: The toolhead.
-        """
-        if self._toolhead is None:
-            self._toolhead = self.printer.lookup_object("toolhead")
-        return self._toolhead
-
-    @property
-    def extruder(self) -> PrinterExtruder:
-        """Return the extruder.
-
-        Returns:
-            PrinterExtruder: The extruder.
-        """
-        if self._extruder is None:
-            self._extruder = self.toolhead.get_extruder()
-        return self._extruder
-
-    @property
-    def heaters(self) -> PrinterHeaters:
-        """Return the heater.
-
-        Returns:
-            PrinterHeaters: The printer heaters.
-        """
-        if self._heaters is None:
-            self._heaters: PrinterHeaters = self.printer.lookup_object("heaters")
-        return self._heaters
-
-    @property
-    def extruder_heater(self) -> Heater:
-        """Return the extruder heater.
-
-        Returns:
-            Heater: The extruder heater.
-        """
-        if self._extruder_heater is None:
-            self._extruder_heater: Heater = self.heaters.lookup_heater("extruder")
-        return self._extruder_heater
-
-    @property
-    def idler_stepper(self) -> ManualStepper:
-        """Return idler stepper."""
-        if self._idler_stepper is None:
-            self._idler_stepper = self.printer.lookup_object(IDLER_STEPPER_NAME)
-        return self._idler_stepper
-
-    @property
-    def pulley_stepper(self) -> ManualStepper:
-        """Return pulley stepper."""
-        if self._pulley_stepper is None:
-            self._pulley_stepper = self.printer.lookup_object(PULLEY_STEPPER_NAME)
-        return self._pulley_stepper
-
-    @property
-    def pulley_stepper_endstop(self) -> MCU_endstop:
-        """Return pulley stepper endstop.
-
-        Returns:
-            MCU_endstop: The pulley stepper endstop.
-        """
-        if self._pulley_stepper_endstop is None:
-            self._pulley_stepper_endstop = self.get_endstop(PULLEY_STEPPER_NAME)
-        return self._pulley_stepper_endstop
-
-    @property
-    def selector_stepper(self) -> ManualStepper:
-        """Return the selector stepper.
-
-        Returns:
-            ManualStepper: The selector stepper.
-        """
-        if self._selector_stepper is None:
-            self._selector_stepper = self.printer.lookup_object(SELECTOR_STEPPER_NAME)
-        return self._selector_stepper
-
-    @property
-    def selector_stepper_endstop(self) -> MCU_endstop:
-        """Return selector stepper endstop.
-
-        Returns:
-            MCU_endstop: The selector stepper endstop.
-        """
-        if self._selector_stepper_endstop is None:
-            self._selector_stepper_endstop = self.get_endstop(SELECTOR_STEPPER_NAME)
-        return self._selector_stepper_endstop
-
-    @property
-    def mcu(self) -> MCU_endstop:
-        """Return the mcu."""
-        if not self._mcu:
-            self._mcu = self.pulley_stepper_endstop.get_mcu()
-        return self._mcu
-
     def get_mapped_tool_id(self, tool_id: int) -> int:
         """Return the mapped tool id.
 
@@ -718,49 +655,14 @@ class MMU3:
         print_time = self.toolhead.get_last_move_time()
         return self.extruder_heater.get_temp(print_time)[0]
 
-    @property
-    def filament_switch_sensor(self) -> SwitchSensor:
-        """Return the SwitchSensor.
-
-        Returns:
-            SwitchSensor: The switch sensor.
-        """
-        if self._filament_switch_sensor is None:
-            self._filament_switch_sensor = self.printer.lookup_object(
-                self.filament_switch_sensor_name
-            )
-        return self._filament_switch_sensor
-
-    @property
-    def filament_motion_sensor(self) -> EncoderSensor:
-        """Return the EncoderSensor.
-
-        Returns:
-            EncoderSensor: The switch sensor.
-        """
-        if self._filament_motion_sensor is None:
-            with contextlib.suppress(configparser.Error):
-                self._filament_motion_sensor = self.printer.lookup_object(
-                    self.filament_motion_sensor_name
-                )
-        return self._filament_motion_sensor
-
-    @property
-    def is_filament_present_in_extruder(self) -> bool:
-        """Return if the filament present in the extruder filament switch sensor.
+    def is_filament_in_switch_sensor(self) -> bool:
+        """Check if the filament present in the filament switch sensor.
 
         Returns:
             bool: True if filament sensor is triggered, False otherwise.
         """
-        start_time = time.time()
-        return_value = self.filament_switch_sensor.get_status(None)["filament_detected"]
-        duration = time.time() - start_time
-        self.respond_debug(
-            f"is_filament_present_in_extruder took {duration:0.1f} seconds"
-        )
-        return return_value
+        return self.filament_switch_sensor.get_status(None)["filament_detected"]
 
-    @property
     def is_filament_in_finda(self) -> bool:
         """Return if the filament is in FINDA or not.
 
@@ -806,69 +708,17 @@ class MMU3:
         self.respond_debug(f"disable_steppers took {duration:0.1f} seconds")
         return True
 
-    def validate_filament_in_extruder(self) -> bool:
-        """Call PAUSE_MMU if the filament is not detected by the filament sensor.
+    def validate_extruder_is_hot_enough(self) -> bool:
+        """Validate if the extruder is hot enough.
 
-        Returns:
-            bool: True if filament in extruder, False otherwise.
-        """
-        self.respond_debug("Checking if filament in extruder")
-        if not self.is_filament_present_in_extruder:
-            self.display_status_msg("Filament not in extruder")
-            return False
-        self.respond_debug("Filament in extruder")
-        return True
-
-    def validate_filament_not_stuck_in_extruder(self) -> bool:
-        """Validate filament is not stuck in extruder.
-
-        Returns:
-            bool: True if the filament is not present in FINDA, False otherwise.
-        """
-        self.respond_debug("Checking if filament stuck in extruder")
-        if self.is_filament_present_in_extruder:
-            self.display_status_msg("Filament stuck in extruder")
-            return False
-        self.respond_debug("Filament not stuck in extruder")
-        return True
-
-    def validate_filament_is_in_finda(self) -> bool:
-        """Validate filament is in FINDA.
-
-        Returns:
-            bool: True if filament is in FINDA, False otherwise.
-        """
-        self.respond_debug("Checking if filament in FINDA")
-        if not self.is_filament_in_finda:
-            self.display_status_msg("Filament not in FINDA")
-            return False
-        self.respond_debug("Filament in FINDA")
-        return True
-
-    def validate_filament_not_stuck_in_finda(self) -> bool:
-        """Validate filament is not stuck in FINDA.
-
-        Returns:
-            bool: True if filament is not stuck in FINDA, False otherwise.
-        """
-        self.respond_debug("Checking if filament stuck in FINDA")
-        if self.is_filament_in_finda:
-            self.display_status_msg("Filament stuck in FINDA")
-            return False
-        self.respond_debug("Filament not stuck in FINDA")
-        return True
-
-    def validate_hotend_is_hot_enough(self) -> bool:
-        """Validate if the hotend is hot enough.
-
-        Pauses if hotend is not hot enough.
+        Pauses if extruder is not hot enough.
 
         Returns:
             bool: True if hotend is hot enough, False otherwise.
         """
         self.respond_debug("Checking hotend temperature")
         if self.get_extruder_temperature() < self.min_temp_extruder:
-            self.display_status_msg("Hotend is cold!")
+            self.display_status_msg("Extruder is not hot enough!")
             return False
         return True
 
@@ -907,7 +757,6 @@ class MMU3:
             self.idler_accel,
             sync=False,
         )
-        # self.disable_steppers(self.idler_stepper)
 
         return True
 
@@ -958,11 +807,12 @@ class MMU3:
             self.selector_stepper.do_set_position(0)
             # do a fast homing first
             self.selector_stepper.do_homing_move(
-                -abs(self.selector_homing_move_length),
-                self.selector_homing_speed,
-                self.selector_accel,
-                True,
-                True,
+                movepos=-abs(self.selector_homing_move_length),
+                speed=self.selector_homing_speed,
+                accel=self.selector_accel,
+                probe_pos=False,
+                triggered=True,
+                check_trigger=True,
             )
             # and then a slow homing
             self.toolhead.wait_moves()
@@ -975,26 +825,21 @@ class MMU3:
             self.selector_stepper.do_set_position(0)
             self.toolhead.wait_moves()
             self.selector_stepper.do_homing_move(
-                -abs(self.selector_homing_move_length),
-                self.selector_homing_speed_slow,
-                self.selector_accel,
-                True,
-                True,
+                movepos=-abs(self.selector_homing_move_length),
+                speed=self.selector_homing_speed_slow,
+                accel=self.selector_accel,
+                probe_pos=False,
+                triggered=True,
+                check_trigger=True,
             )
             self.toolhead.wait_moves()
             self.selector_stepper.do_set_position(0)
-            # self.disable_steppers(self.selector_stepper)
 
         self.current_tool = None
         self.current_filament = None
-        # self.disable_steppers(self.idler_stepper)
-        # self.respond_debug("Move selector to filament 0")
-        # self.select_tool(0)
         self.unselect_tool()
         self.is_homed = True
         self.respond_debug("Homing MMU ended ...")
-
-        # self.disable_steppers()
 
         return True
 
@@ -1009,17 +854,21 @@ class MMU3:
         """
         for i in range(int(self.finda_load_retry)):
             self.pulley_stepper.do_set_position(0)
+            self.respond_debug(f"self.finda_load_length: {self.finda_load_length}")
+            self.respond_debug(f"self.finda_load_speed: {self.finda_load_speed}")
+            self.respond_debug(f"self.finda_load_accel: {self.finda_load_accel}")
             self.pulley_stepper.do_homing_move(
-                self.finda_load_length,
-                self.finda_load_speed,
-                self.finda_load_accel,
-                True,
-                False,
+                movepos=self.finda_load_length,
+                speed=self.finda_load_speed,
+                accel=self.finda_load_accel,
+                probe_pos=False,
+                triggered=True,
+                check_trigger=False,
             )
             self.toolhead.wait_moves()
 
             # check endstop status and exit from the loop
-            if self.is_filament_in_finda:
+            if self.is_filament_in_finda():
                 self.respond_debug("FINDA endstop triggered. Exiting filament load.")
                 return True
             self.respond_debug(f"FINDA endstop not triggered. Retrying... {i + 1}")
@@ -1056,6 +905,7 @@ class MMU3:
             M300
             M300
         """)
+        self.toolhead.wait_moves()
         return True
 
     def resume(self) -> bool:
@@ -1072,6 +922,7 @@ class MMU3:
             RESUME
             """
         )
+        self.toolhead.wait_moves()
         return True
 
     def unlock(self) -> bool:
@@ -1122,7 +973,6 @@ class MMU3:
                 self.selector_speed,
                 self.selector_accel,
             )
-            # self.disable_steppers(self.selector_stepper)
         self.current_tool = tool_id
         self.respond_debug(f"Tool {tool_id} Enabled")
         return True
@@ -1153,7 +1003,6 @@ class MMU3:
             sync=False,
         )
         self.current_tool = None
-        # self.disable_steppers(self.idler_stepper)
         self.respond_debug("Unselect Tool is complete!")
         return True
 
@@ -1167,7 +1016,7 @@ class MMU3:
         Returns:
             bool: True, if filament loaded to hotend, False otherwise.
         """
-        if self.is_filament_present_in_extruder:
+        if self.is_filament_in_switch_sensor():
             return True
 
         self.respond_debug("Retry loading ...")
@@ -1175,8 +1024,7 @@ class MMU3:
             self.display_status_msg("Printer is paused ...")
             return False
 
-        if self.get_extruder_temperature() < self.min_temp_extruder:
-            self.display_status_msg("Hotend is not hot enough ...")
+        if not self.validate_extruder_is_hot_enough():
             return False
 
         self.respond_debug("Loading Filament...")
@@ -1214,7 +1062,7 @@ class MMU3:
         if self.is_paused:
             return False
 
-        if not self.validate_hotend_is_hot_enough():
+        if not self.validate_extruder_is_hot_enough():
             return False
 
         self.respond_debug("Loading Filament To Hotend...")
@@ -1233,14 +1081,13 @@ class MMU3:
         """)
         self.toolhead.wait_moves()
         self.pulley_stepper.do_set_position(0)
-        if not self.is_filament_present_in_extruder:
+        if not self.is_filament_in_switch_sensor():
             for _ in range(self.load_retry):
                 self.retry_load_filament_to_hotend()
 
-        # self.disable_steppers(self.pulley_stepper)
         self.unselect_tool()
 
-        if not self.validate_filament_in_extruder():
+        if not self.is_filament_in_switch_sensor():
             return False
 
         if self.enable_filament_cutter and self.extra_load_length > 0:
@@ -1248,7 +1095,7 @@ class MMU3:
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
-                G1 E{self.extra_load_length} F6000
+                G1 E{self.extra_load_length} F{self.pulley_load_to_extruder_speed * 60}
                 G90
             """)
             self.toolhead.wait_moves()
@@ -1258,7 +1105,7 @@ class MMU3:
 
     def retry_unload_filament_from_hotend(self) -> None:
         """Retry unload, try correct misalignment of bondtech gear."""
-        if not self.is_filament_present_in_extruder:
+        if not self.is_filament_in_switch_sensor():
             return True
 
         self.respond_debug("Retry unloading ....")
@@ -1266,14 +1113,14 @@ class MMU3:
             self.display_status_msg("MMU is paused")
             return False
 
-        if not self.validate_hotend_is_hot_enough():
+        if not self.validate_extruder_is_hot_enough():
             return False
 
         self.respond_debug("Unloading Filament...")
-        self.gcode.run_script_from_command("""
+        self.gcode.run_script_from_command(f"""
             G91
             G92 E0
-            G1 E-50 F6000
+            G1 E-{self.hotend_unload_length} F{self.hotend_unload_speed * 60}
             G92 E0
             G90
         """)
@@ -1292,7 +1139,7 @@ class MMU3:
         if self.is_paused:
             return False
 
-        if not self.is_filament_present_in_extruder:
+        if not self.is_filament_in_switch_sensor():
             self.respond_debug("No filament in extruder")
             return True
 
@@ -1302,26 +1149,27 @@ class MMU3:
             self.respond_debug(f"Auto unselecting T{self.current_tool}")
             self.unselect_tool()
 
-        if not self.validate_hotend_is_hot_enough():
+        if not self.validate_extruder_is_hot_enough():
             return False
 
         self.respond_debug("Unloading Filament...")
-        self.gcode.run_script_from_command("""
+        self.gcode.run_script_from_command(f"""
             G91
             G92 E0
-            G1 E-50 F6000
+            G1 E-{self.hotend_unload_speed} F{self.hotend_unload_speed * 60}
             G90
             G92 E0
-            G4 P1000
+            ;G4 P1000
         """)
         self.toolhead.wait_moves()
 
-        if self.is_filament_present_in_extruder:
-            for _ in range(self.unload_retry):
-                self.retry_unload_filament_from_hotend()
+        if self.filament_switch_sensor_position != SwitchSensorPosition.PreGears:
+            if self.is_filament_in_switch_sensor():
+                for _ in range(self.unload_retry):
+                    self.retry_unload_filament_from_hotend()
 
-        if not self.validate_filament_not_stuck_in_extruder():
-            return False
+            if self.is_filament_in_switch_sensor():
+                return False
 
         self.respond_debug("Filament removed")
         return True
@@ -1358,7 +1206,7 @@ class MMU3:
         if self.is_paused:
             return False
 
-        if not self.validate_hotend_is_hot_enough():
+        if not self.validate_extruder_is_hot_enough():
             return False
 
         if self.current_tool is not None:
@@ -1429,13 +1277,11 @@ class MMU3:
         self.respond_debug("Loading filament to FINDA ...")
         if not self.load_filament_to_finda_in_loop():
             self.pulley_stepper.do_set_position(0)
-            # self.disable_steppers(self.pulley_stepper)
             return False
 
         self.pulley_stepper.do_set_position(0)
-        # self.disable_steppers(self.pulley_stepper)
 
-        # if not self.validate_filament_is_in_finda():
+        # if not self.is_filament_in_finda():
         #     return False
 
         self.current_filament = self.current_tool
@@ -1470,7 +1316,6 @@ class MMU3:
             self.bowden_load_accel2,
             sync=False,
         )
-        # self.disable_steppers(self.pulley_stepper)
         self.respond_debug("Loading done from FINDA to extruder")
 
         return True
@@ -1531,8 +1376,7 @@ class MMU3:
             self.finda_unload_accel,
         )
         self.pulley_stepper.do_set_position(0)
-        # self.disable_steppers(self.pulley_stepper)
-        if not self.validate_filament_not_stuck_in_finda():
+        if self.is_filament_in_finda():
             return False
         self.current_filament = None
         self.respond_debug("Unloading done from FINDA")
@@ -1561,21 +1405,31 @@ class MMU3:
         self.pulley_stepper.do_set_position(0)
         if not self.enable_no_selector_mode:
             self.pulley_stepper.do_homing_move(
-                -self.bowden_unload_length,
-                self.bowden_unload_speed,
-                self.bowden_unload_accel,
-                False,
-                False,
+                movepos=-self.bowden_unload_length,
+                speed=self.bowden_unload_speed,
+                accel=self.bowden_unload_accel,
+                probe_pos=False,
+                triggered=False,
+                check_trigger=False,
             )
+
+            # if the filament sensor is pre-gears, check if we were able to
+            # pull the filament out.
+            if (
+                self.filament_switch_sensor_position == SwitchSensorPosition.PreGears
+                and self.is_filament_in_switch_sensor()
+            ):
+                for _ in range(self.unload_retry):
+                    self.retry_unload_filament_from_hotend()
 
             # if filament is still in finda, get into an unload loop...
             if (
-                self.is_filament_in_finda
+                self.is_filament_in_finda()
                 and not self.unload_filament_to_finda_in_loop()
             ):
                 return False
 
-            if not self.validate_filament_not_stuck_in_finda():
+            if self.is_filament_in_finda():
                 return False
         else:
             self.pulley_stepper.do_move(
@@ -1583,7 +1437,6 @@ class MMU3:
                 self.bowden_unload_speed,
                 self.bowden_unload_accel,
             )
-        # self.disable_steppers(self.pulley_stepper)
         self.respond_debug("Done unloading from FINDA!")
         return True
 
@@ -1599,16 +1452,17 @@ class MMU3:
         for i in range(int(self.finda_unload_retry)):
             self.pulley_stepper.do_set_position(0)
             self.pulley_stepper.do_homing_move(
-                -self.finda_unload_length,
-                self.finda_unload_speed,
-                self.finda_unload_accel,
-                False,
-                False,
+                movepos=-self.finda_unload_length,
+                speed=self.finda_unload_speed,
+                accel=self.finda_unload_accel,
+                probe_pos=False,
+                triggered=False,
+                check_trigger=False,
             )
             self.toolhead.wait_moves()
 
             # check endstop status and exit from the loop
-            if not self.is_filament_in_finda:
+            if not self.is_filament_in_finda():
                 self.respond_debug("FINDA endstop triggered. Exiting filament unload.")
                 return True
             self.respond_debug(f"FINDA endstop not triggered. Retrying... {i + 1}")
@@ -1772,7 +1626,7 @@ class MMU3:
         if self.is_paused:
             return False
 
-        if not self.validate_hotend_is_hot_enough():
+        if not self.validate_extruder_is_hot_enough():
             return False
 
         self.respond_debug(f"LT {tool_id}")
@@ -1793,7 +1647,7 @@ class MMU3:
 
         if self.current_filament is None:
             self.respond_debug("Current filament is None!")
-            if self.is_filament_in_finda:
+            if self.is_filament_in_finda():
                 self.respond_debug("Filament in FINDA!")
                 self.respond_debug("But there is a filament in FINDA!")
                 if self.current_tool is None:
@@ -1811,7 +1665,7 @@ class MMU3:
             self.respond_debug("No need to unload!")
             return True
 
-        if self.enable_filament_cutter and self.is_filament_present_in_extruder:
+        if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
             self.respond_debug(f"Cut T{self.current_filament}")
             # cut the filament in extruder
             self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
@@ -1836,7 +1690,7 @@ class MMU3:
         if self.is_paused:
             return False
 
-        if not self.is_filament_present_in_extruder:
+        if not self.is_filament_in_switch_sensor():
             self.respond_debug("Filament not in extruder")
             return True
 
@@ -1844,9 +1698,7 @@ class MMU3:
         self.respond_debug("Preheat Nozzle")
         min_temp = max(self.get_extruder_temperature(), self.extruder_eject_temp)
         self.gcode.run_script_from_command(f"M109 S{min_temp}")
-        if not self.unload_filament_from_hotend_with_ramming():
-            return False
-        return True
+        return self.unload_filament_from_hotend_with_ramming()
 
     def eject_before_home(self) -> None:
         """Eject from extruder gear to MMU3.
@@ -1855,17 +1707,17 @@ class MMU3:
             bool: True, if filament ejected, False otherwise.
         """
         self.respond_debug("Eject Filament if loaded ...")
-        if self.is_filament_present_in_extruder:
+        if self.is_filament_in_switch_sensor():
             if not self.eject_from_extruder():
                 return False
-            if not self.validate_filament_not_stuck_in_extruder():
+            if self.is_filament_in_switch_sensor():
                 return False
 
         if not self.enable_no_selector_mode:
-            if self.is_filament_in_finda:
+            if self.is_filament_in_finda():
                 if not self.unload_filament_from_extruder():
                     return False
-                if not self.validate_filament_not_stuck_in_finda():
+                if self.is_filament_in_finda():
                     return False
                 self.respond_debug("Filament ejected !")
             else:
@@ -1875,7 +1727,6 @@ class MMU3:
 
         return True
 
-    @gcmd_grabber
     def cmd_endstops_status(self, gcmd: GCodeCommand) -> bool:
         """Print the status of all endstops.
 
@@ -1891,12 +1742,11 @@ class MMU3:
         # Report results
         self.respond_info("Endstop status")
         self.respond_info("==============")
-        self.respond_info(f"Extruder : {self.is_filament_present_in_extruder}")
+        self.respond_info(f"Extruder : {self.is_filament_in_switch_sensor()}")
         self.respond_info(
             f"{STEPPER_NAME_MAP[PULLEY_STEPPER_NAME]} : "
             f"{self.pulley_stepper_endstop.query_endstop(print_time)}"
         )
-        # gcmd.respond_info(f"is_filament_in_finda: {self.is_filament_in_finda}")
         self.respond_info(
             f"{STEPPER_NAME_MAP[SELECTOR_STEPPER_NAME]} : "
             f"{self.selector_stepper_endstop.query_endstop(print_time)}"
@@ -1904,7 +1754,6 @@ class MMU3:
 
         return True
 
-    @gcmd_grabber
     @auto_pause
     def cmd_home_idler(self, gcmd: GCodeCommand) -> bool:
         """Home the idler.
@@ -1917,7 +1766,6 @@ class MMU3:
         """
         return self.home_idler()
 
-    @gcmd_grabber
     @auto_pause
     @measure_duration
     def cmd_home_mmu(self, gcmd: GCodeCommand) -> bool:
@@ -1934,7 +1782,6 @@ class MMU3:
         """
         return self.home_mmu()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_home_mmu_only(self, gcmd: GCodeCommand) -> bool:
         """Home the MMU.
@@ -1956,7 +1803,6 @@ class MMU3:
         """
         return self.home_mmu_only()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_load_filament_to_finda_in_loop(self, gcmd: GCodeCommand) -> bool:
         """Load the filament to FINDA in a infinite loop.
@@ -1969,7 +1815,6 @@ class MMU3:
         """
         return self.load_filament_to_finda_in_loop()
 
-    @gcmd_grabber
     def cmd_pause(self, gcmd: GCodeCommand) -> bool:
         """Pause the MMU.
 
@@ -1985,7 +1830,6 @@ class MMU3:
         """
         return self.pause()
 
-    @gcmd_grabber
     def cmd_resume(self, gcmd: GCodeCommand) -> bool:
         """Resume the MMU.
 
@@ -1997,7 +1841,6 @@ class MMU3:
         """
         return self.resume()
 
-    @gcmd_grabber
     @auto_pause
     @measure_duration
     def cmd_tx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
@@ -2060,7 +1903,6 @@ class MMU3:
                 else:
                     error_message = f"T{tool_id} failed!"
                 self.respond_debug(error_message)
-                # self.disable_steppers()
 
                 # display a prompt in Mainsail UI
                 prompt = Prompt(
@@ -2079,28 +1921,26 @@ class MMU3:
                                 Button(label="Home MMU", gcode="HOME_MMU"),
                                 Button(
                                     label=f"Retry T{tool_id}",
-                                    gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=T{tool_id}",
+                                    gcode="PROMPT_CLOSE_AND_RUN_COMMAND "
+                                    f"COMMAND=T{tool_id}",
                                 ),
                             ],
                         ),
                         FooterButton(
-                            label=f"Resume",
-                            gcode=f"PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=RESUME",
+                            label="Resume",
+                            gcode="PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=RESUME",
                         ),
                     ],
                 )
                 self.gcode.run_script_from_command(prompt.to_gcode())
-                # self.disable_steppers()
                 return False
 
         if previous_filament is not None:
             self.display_status_msg(f"Done T{previous_filament} => T{tool_id}")
         else:
             self.display_status_msg(f"Done T{tool_id}")
-        # self.disable_steppers()
         return True
 
-    @gcmd_grabber
     @auto_pause
     def cmd_kx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
         """The generic Kx command.
@@ -2114,7 +1954,6 @@ class MMU3:
         """
         return self.cut_filament_in_mmu(tool_id)
 
-    @gcmd_grabber
     def cmd_unlock(self, gcmd: GCodeCommand) -> bool:
         """Park the idler, stop the delayed stop of the heater.
 
@@ -2123,7 +1962,6 @@ class MMU3:
         """
         return self.unlock()
 
-    @gcmd_grabber
     @auto_pause
     @measure_duration
     def cmd_load_tool(self, gcmd: GCodeCommand) -> bool:
@@ -2138,7 +1976,6 @@ class MMU3:
         tool_id = gcmd.get_int("VALUE", None)
         return self.load_tool(tool_id)
 
-    @gcmd_grabber
     @auto_pause
     @measure_duration
     def cmd_unload_tool(self, gcmd: GCodeCommand) -> bool:
@@ -2152,7 +1989,6 @@ class MMU3:
         """
         return self.unload_tool()
 
-    @gcmd_grabber
     @auto_pause
     @measure_duration
     def cmd_select_tool(self, gcmd: GCodeCommand) -> bool:
@@ -2167,7 +2003,6 @@ class MMU3:
         tool_id = gcmd.get_int("VALUE", None)
         return self.select_tool(tool_id)
 
-    @gcmd_grabber
     @auto_pause
     @measure_duration
     def cmd_unselect_tool(self, gcmd: GCodeCommand) -> bool:
@@ -2181,7 +2016,6 @@ class MMU3:
         """
         return self.unselect_tool()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_retry_load_filament_to_hotend(self, gcmd: GCodeCommand) -> bool:
         """Try to reinsert the filament into the hotend.
@@ -2198,7 +2032,6 @@ class MMU3:
         """
         return self.retry_load_filament_to_hotend()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_load_filament_to_hotend(self, gcmd: GCodeCommand) -> bool:
         """Load the filament into the hotend.
@@ -2217,7 +2050,6 @@ class MMU3:
         """
         return self.load_filament_to_hotend()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_retry_unload_filament_from_hotend(self, gcmd: GCodeCommand) -> bool:
         """Retry unload, try correct misalignment of bondtech gear.
@@ -2230,7 +2062,6 @@ class MMU3:
         """
         return self.retry_unload_filament_from_hotend()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_unload_filament_from_hotend(self, gcmd: GCodeCommand) -> bool:
         """Unload the filament from the nozzle (without RAMMING !!!).
@@ -2246,7 +2077,6 @@ class MMU3:
         """
         return self.unload_filament_from_hotend()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_eject_ramming(self, gcmd: GCodeCommand) -> bool:
         """Eject the filament with ramming from the extruder nozzle to the MMU3.
@@ -2259,7 +2089,6 @@ class MMU3:
         """
         return self.eject_ramming()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_unload_filament_from_hotend_with_ramming(self, gcmd: GCodeCommand) -> bool:
         """Unload from hotend with ramming.
@@ -2272,7 +2101,6 @@ class MMU3:
         """
         return self.unload_filament_from_hotend_with_ramming()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_load_filament_to_finda(self, gcmd: GCodeCommand) -> bool:
         """Load filament until the FINDA detect it.
@@ -2288,7 +2116,6 @@ class MMU3:
         """
         return self.load_filament_to_finda()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_load_filament_from_finda_to_extruder(self, gcmd: GCodeCommand) -> bool:
         """Load from the FINDA to the extruder gear.
@@ -2301,7 +2128,6 @@ class MMU3:
         """
         return self.load_filament_from_finda_to_extruder()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_load_filament_to_extruder(self, gcmd: GCodeCommand) -> bool:
         """Load from MMU3 to extruder gear by calling LOAD_FILAMENT_TO_FINDA.
@@ -2317,7 +2143,6 @@ class MMU3:
         """
         return self.load_filament_to_extruder()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_unload_filament_from_finda(self, gcmd: GCodeCommand) -> bool:
         """Unload filament until the FINDA detect it.
@@ -2333,7 +2158,6 @@ class MMU3:
         """
         return self.unload_filament_from_finda()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_unload_filament_from_extruder_to_finda(self, gcmd: GCodeCommand) -> bool:
         """Unload from extruder gear to the FINDA.
@@ -2346,7 +2170,6 @@ class MMU3:
         """
         return self.unload_filament_from_extruder_to_finda()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_unload_filament_from_extruder(self, gcmd: GCodeCommand) -> bool:
         """Unload from the extruder gear to the MMU3.
@@ -2362,7 +2185,6 @@ class MMU3:
         """
         return self.unload_filament_from_extruder()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_m702(self, gcmd: GCodeCommand) -> bool:
         """Unload filament if inserted into the IR sensor.
@@ -2376,7 +2198,7 @@ class MMU3:
         if not self.unload_tool():
             return False
         if not self.enable_no_selector_mode:
-            if not self.is_filament_in_finda:
+            if not self.is_filament_in_finda():
                 if not self.unselect_tool():
                     return False
             else:
@@ -2389,7 +2211,6 @@ class MMU3:
         self.display_status_msg("M702 ok ...")
         return True
 
-    @gcmd_grabber
     @auto_pause
     def cmd_eject_from_extruder(self, gcmd: GCodeCommand) -> bool:
         """Preheat the heater if needed and unload the filament with ramming.
@@ -2404,7 +2225,6 @@ class MMU3:
         """
         return self.eject_from_extruder()
 
-    @gcmd_grabber
     @auto_pause
     def cmd_eject_before_home(self, gcmd: GCodeCommand) -> bool:
         """Eject from extruder gear to MMU3.
@@ -2417,7 +2237,6 @@ class MMU3:
         """
         return self.eject_before_home()
 
-    @gcmd_grabber
     @auto_pause
     @measure_duration
     def cmd_pulley_calibrate(self, gcmd: GCodeCommand) -> bool:
@@ -2431,7 +2250,6 @@ class MMU3:
         """
         return self.pulley_calibrate()
 
-    @gcmd_grabber
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
         """Get any of the MMU parameters/attributes.
 
@@ -2448,7 +2266,6 @@ class MMU3:
             return True
         return False
 
-    @gcmd_grabber
     def cmd_set_mmu_param(self, gcmd: GCodeCommand) -> bool:
         """Set any of the MMU parameters/attributes.
 
@@ -2470,10 +2287,22 @@ class MMU3:
         elif IS_DIGIT.match(value):
             value = float(value)
         elif value.lower() in ["true", "false"]:
-            value = True if value.lower() == "true" else False
+            value = value.lower() == "true"
         setattr(self, param, value)
         self.display_status_msg(f"{param}: {value}")
         return True
+
+
+def load_config(config: ConfigWrapper) -> MMU3:
+    """Load the mmu3 config prefix.
+
+    Args:
+        config (ConfigWrapper): The config wrapper.
+
+    Returns:
+        MMU3: The MMU3 instance.
+    """
+    return MMU3(config)
 
 
 def load_config_prefix(config: ConfigWrapper) -> MMU3:
