@@ -427,6 +427,8 @@ class MMU3:
         # cut in extruder
         self.enable_filament_cutter = config.getboolean("enable_filament_cutter", False)
         self.extra_load_length = config.getfloat("extra_load_length", 0)
+        self.extra_load_speed = config.getfloat("extra_load_speed", 10)
+        self.travel_speed = config.getfloat("travel_speed", 100)
         # selector
         self.selector_speed = config.getfloat("selector_speed", 35)
         self.selector_homing_speed = config.getfloat("selector_homing_speed", 20)
@@ -1095,8 +1097,9 @@ class MMU3:
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
-                G1 E{self.extra_load_length} F{self.pulley_load_to_extruder_speed * 60}
+                G1 E{self.extra_load_length} F{self.extra_load_speed * 60}
                 G90
+                G0 F{self.travel_speed * 60}
             """)
             self.toolhead.wait_moves()
 
@@ -1987,7 +1990,23 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.unload_tool()
+        with (
+            FilamentSwitchSensorManager(
+                self.filament_switch_sensor,
+                False,
+                self.respond_debug,
+                self.reactor,
+                self.toolhead,
+            ),
+            FilamentMotionSensorManager(
+                self.filament_motion_sensor,
+                False,
+                self.respond_debug,
+                self.reactor,
+                self.toolhead,
+            ),
+        ):
+            return self.unload_tool()
 
     @auto_pause
     @measure_duration
