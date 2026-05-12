@@ -2283,6 +2283,8 @@ class MMU3:
             value = getattr(self, param)
             self.display_status_msg(f"{param}: {value}")
             return True
+
+        self.display_status_msg(f"{param}: doesn't exist!")
         return False
 
     def cmd_set_mmu_param(self, gcmd: GCodeCommand) -> bool:
@@ -2296,6 +2298,11 @@ class MMU3:
         """
         param: str = gcmd.get("PARAM")
         value: str = gcmd.get("VALUE")
+
+        if param.startswith("_"):
+            # protect private parameters
+            return
+
         if "," in value:
             temp_value = []
             for v in value.split(","):
