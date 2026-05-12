@@ -1859,9 +1859,9 @@ class MMU3:
         previous_filament = self.current_filament
 
         if previous_filament is not None:
-            status_message = f"Start T{previous_filament} => T{tool_id}"
+            status_message = f"T{previous_filament} => T{tool_id}"
         else:
-            status_message = f"Start T{tool_id}"
+            status_message = f"T{tool_id}"
         self.display_status_msg(status_message)
 
         if self.current_filament == tool_id:
@@ -1939,9 +1939,9 @@ class MMU3:
                 return False
 
         if previous_filament is not None:
-            self.display_status_msg(f"Done T{previous_filament} => T{tool_id}")
+            self.respond_debug(f"Done T{previous_filament} => T{tool_id}")
         else:
-            self.display_status_msg(f"Done T{tool_id}")
+            self.respond_debug(f"Done T{tool_id}")
         return True
 
     @auto_pause
