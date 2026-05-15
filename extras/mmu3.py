@@ -856,9 +856,6 @@ class MMU3:
         """
         for i in range(int(self.finda_load_retry)):
             self.pulley_stepper.do_set_position(0)
-            self.respond_debug(f"self.finda_load_length: {self.finda_load_length}")
-            self.respond_debug(f"self.finda_load_speed: {self.finda_load_speed}")
-            self.respond_debug(f"self.finda_load_accel: {self.finda_load_accel}")
             self.pulley_stepper.do_homing_move(
                 movepos=self.finda_load_length,
                 speed=self.finda_load_speed,
@@ -908,6 +905,7 @@ class MMU3:
             M300
         """)
         self.toolhead.wait_moves()
+        self.disable_steppers()
         return True
 
     def resume(self) -> bool:
@@ -1243,16 +1241,16 @@ class MMU3:
                 errors.
         """
         # pull the filament to finda
-        self.respond_debug("Load to FINDA")
+        self.display_status_msg("Load to FINDA")
         if not self.load_filament_to_finda():
             return False
 
         # wait for 10 seconds
-        self.respond_debug("Mark the filament")
+        self.display_status_msg("Mark the filament")
         self.reactor.pause(self.reactor.monotonic() + 10)
 
         # now pull exactly 100 mm of filament.
-        self.respond_debug("Loading 100 mm")
+        self.display_status_msg("Loading 100 mm")
         self.pulley_stepper.do_set_position(0)
         self.pulley_stepper.do_move(
             100,
@@ -1767,7 +1765,9 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.home_idler()
+        result = self.home_idler()
+        self.disable_steppers()
+        return result
 
     @auto_pause
     @measure_duration
@@ -1783,7 +1783,9 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.home_mmu()
+        result = self.home_mmu()
+        self.disable_steppers()
+        return result
 
     @auto_pause
     def cmd_home_mmu_only(self, gcmd: GCodeCommand) -> bool:
@@ -1804,7 +1806,9 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.home_mmu_only()
+        result = self.home_mmu_only()
+        self.disable_steppers()
+        return result
 
     @auto_pause
     def cmd_load_filament_to_finda_in_loop(self, gcmd: GCodeCommand) -> bool:
@@ -1816,7 +1820,9 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.load_filament_to_finda_in_loop()
+        result = self.load_filament_to_finda_in_loop()
+        self.disable_steppers()
+        return result
 
     def cmd_pause(self, gcmd: GCodeCommand) -> bool:
         """Pause the MMU.
@@ -1936,12 +1942,14 @@ class MMU3:
                     ],
                 )
                 self.gcode.run_script_from_command(prompt.to_gcode())
+                self.disable_steppers()
                 return False
 
         if previous_filament is not None:
             self.respond_debug(f"Done T{previous_filament} => T{tool_id}")
         else:
             self.respond_debug(f"Done T{tool_id}")
+        self.disable_steppers()
         return True
 
     @auto_pause
