@@ -1051,34 +1051,36 @@ class MMU3:
         if not self.validate_extruder_is_hot_enough():
             return False
 
-        self.respond_debug("Loading Filament...")
+        self.respond_debug("Loading Filament To Hotend (Native Trapq Sync Mode Retry)...")
 
-        self.pulley_stepper.do_set_position(0)
-        self.pulley_stepper.do_move(
-            self.bowden_load_length3,
-            self.pulley_load_to_extruder_speed,
-            0,
-            sync=False,
-        )
-        self.gcode.run_script_from_command(f"""
-            G91
-            G92 E0
-            G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
-            G90
-        """)
         self.toolhead.wait_moves()
+        self.toolhead.flush_step_generation()
+        motion_queuing = self.printer.lookup_object('motion_queuing')
+        stepper = self.pulley_stepper.rail.get_steppers()[0]
+        orig_trapq = stepper.get_trapq()
+        stepper.set_position([self.extruder.last_position, 0., 0.])
+        stepper.set_trapq(self.extruder.get_trapq())
+        motion_queuing.check_step_generation_scan_windows()
+
+        try:
+            self.gcode.run_script_from_command(f"""
+                G91
+                G92 E0
+                G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
+                G90
+            """)
+            self.toolhead.wait_moves()
+        finally:
+            self.toolhead.flush_step_generation()
+            stepper.set_trapq(orig_trapq)
+            stepper.set_position([0., 0., 0.])
+            motion_queuing.check_step_generation_scan_windows()
 
         self.pulley_stepper.do_set_position(0)
         return True
 
     def load_filament_to_hotend(self) -> bool:
-        """Load the filament to hotend.
-
-        The MMU3 push the filament of 20mm and the extruder gear try to insert
-        it into the nozzle if the filament is not detected by the IR, call
-        RETRY_LOAD_FILAMENT_TO_HOTEND 5 times.
-
-        Call PAUSE_MMU if the filament is not detected by the IR sensor.
+        """Load the filament to hotend with perfectly synchronized steppers.
 
         Returns:
             bool: True, if filament loaded to hotend.
@@ -1089,22 +1091,31 @@ class MMU3:
         if not self.validate_extruder_is_hot_enough():
             return False
 
-        self.respond_debug("Loading Filament To Hotend...")
-        self.pulley_stepper.do_set_position(0)
-        self.pulley_stepper.do_move(
-            self.bowden_load_length3,
-            self.pulley_load_to_extruder_speed,
-            self.pulley_stepper.accel,
-            sync=False,
-        )
-        self.gcode.run_script_from_command(f"""
-            G91
-            G92 E0
-            G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
-            G90
-        """)
+        self.respond_debug("Loading Filament To Hotend (Native Trapq Sync Mode)...")
+
         self.toolhead.wait_moves()
-        self.pulley_stepper.do_set_position(0)
+        self.toolhead.flush_step_generation()
+        motion_queuing = self.printer.lookup_object('motion_queuing')
+        stepper = self.pulley_stepper.rail.get_steppers()[0]
+        orig_trapq = stepper.get_trapq()
+        stepper.set_position([self.extruder.last_position, 0., 0.])
+        stepper.set_trapq(self.extruder.get_trapq())
+        motion_queuing.check_step_generation_scan_windows()
+
+        try:
+            self.gcode.run_script_from_command(f"""
+                G91
+                G92 E0
+                G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
+                G90
+            """)
+            self.toolhead.wait_moves()
+        finally:
+            self.toolhead.flush_step_generation()
+            stepper.set_trapq(orig_trapq)
+            stepper.set_position([0., 0., 0.])
+            motion_queuing.check_step_generation_scan_windows()
+
         if not self.is_filament_in_switch_sensor():
             for _ in range(self.load_retry):
                 self.retry_load_filament_to_hotend()
@@ -1115,7 +1126,6 @@ class MMU3:
             return False
 
         if self.enable_filament_cutter and self.extra_load_length > 0:
-            # load the filament a little more
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
