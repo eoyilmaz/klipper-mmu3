@@ -121,6 +121,28 @@ def auto_pause(f: Callable) -> Callable:
     return wrapped_f
 
 
+def auto_disable_steppers(f: Callable) -> Callable:
+    """Decorator to automatically disable steppers after command execution.
+
+    If any of the decorated commands are executed, the MMU3 instance will
+    automatically disable the steppers after the command.
+
+    Args:
+        f (Callable): The function to wrap.
+
+    Returns:
+        Callable: The wrapped function.
+    """
+
+    @wraps(f)
+    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+        result = f(self, gcmd, *args, **kwargs)
+        self.disable_steppers()
+        return result
+
+    return wrapped_f
+
+
 class SwitchSensorPosition(enum.Enum):
     PreGears = "pre_gears"
     OnGears = "on_gears"
@@ -700,11 +722,13 @@ class MMU3:
         if not isinstance(steppers, list):
             return False
 
+        self.respond_debug("Disabling steppers ...")
+        self.toolhead.wait_moves()
         for stepper in steppers:
-            self.toolhead.wait_moves()
             stepper.dwell(self.pause_before_disabling_steppers)
             stepper.do_enable(False)
             stepper.dwell(self.pause_after_disabling_steppers)
+        self.respond_debug("Steppers disabled!")
 
         duration = time.time() - start_time
         self.respond_debug(f"disable_steppers took {duration:0.1f} seconds")
@@ -1756,6 +1780,7 @@ class MMU3:
         return True
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_home_idler(self, gcmd: GCodeCommand) -> bool:
         """Home the idler.
 
@@ -1765,12 +1790,11 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        result = self.home_idler()
-        self.disable_steppers()
-        return result
+        return self.home_idler()
 
     @auto_pause
     @measure_duration
+    @auto_disable_steppers
     def cmd_home_mmu(self, gcmd: GCodeCommand) -> bool:
         """Home the MMU.
 
@@ -1783,11 +1807,10 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        result = self.home_mmu()
-        self.disable_steppers()
-        return result
+        return self.home_mmu()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_home_mmu_only(self, gcmd: GCodeCommand) -> bool:
         """Home the MMU.
 
@@ -1806,11 +1829,10 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        result = self.home_mmu_only()
-        self.disable_steppers()
-        return result
+        return self.home_mmu_only()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_load_filament_to_finda_in_loop(self, gcmd: GCodeCommand) -> bool:
         """Load the filament to FINDA in a infinite loop.
 
@@ -1820,9 +1842,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        result = self.load_filament_to_finda_in_loop()
-        self.disable_steppers()
-        return result
+        return self.load_filament_to_finda_in_loop()
 
     def cmd_pause(self, gcmd: GCodeCommand) -> bool:
         """Pause the MMU.
@@ -1852,6 +1872,7 @@ class MMU3:
 
     @auto_pause
     @measure_duration
+    @auto_disable_steppers
     def cmd_tx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
         """The generic Tx command.
 
@@ -1942,17 +1963,16 @@ class MMU3:
                     ],
                 )
                 self.gcode.run_script_from_command(prompt.to_gcode())
-                self.disable_steppers()
                 return False
 
         if previous_filament is not None:
             self.respond_debug(f"Done T{previous_filament} => T{tool_id}")
         else:
             self.respond_debug(f"Done T{tool_id}")
-        self.disable_steppers()
         return True
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_kx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
         """The generic Kx command.
 
@@ -1965,6 +1985,7 @@ class MMU3:
         """
         return self.cut_filament_in_mmu(tool_id)
 
+    @auto_disable_steppers
     def cmd_unlock(self, gcmd: GCodeCommand) -> bool:
         """Park the idler, stop the delayed stop of the heater.
 
@@ -1975,6 +1996,7 @@ class MMU3:
 
     @auto_pause
     @measure_duration
+    @auto_disable_steppers
     def cmd_load_tool(self, gcmd: GCodeCommand) -> bool:
         """Load filament from MMU3 to nozzle.
 
@@ -1989,6 +2011,7 @@ class MMU3:
 
     @auto_pause
     @measure_duration
+    @auto_disable_steppers
     def cmd_unload_tool(self, gcmd: GCodeCommand) -> bool:
         """Unload filament from nozzle to MMU3.
 
@@ -2018,6 +2041,7 @@ class MMU3:
 
     @auto_pause
     @measure_duration
+    @auto_disable_steppers
     def cmd_select_tool(self, gcmd: GCodeCommand) -> bool:
         """Select a tool. move the idler and then move the selector (if needed).
 
@@ -2032,6 +2056,7 @@ class MMU3:
 
     @auto_pause
     @measure_duration
+    @auto_disable_steppers
     def cmd_unselect_tool(self, gcmd: GCodeCommand) -> bool:
         """Unselect a tool, only park the idler.
 
@@ -2044,6 +2069,7 @@ class MMU3:
         return self.unselect_tool()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_retry_load_filament_to_hotend(self, gcmd: GCodeCommand) -> bool:
         """Try to reinsert the filament into the hotend.
 
@@ -2060,6 +2086,7 @@ class MMU3:
         return self.retry_load_filament_to_hotend()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_load_filament_to_hotend(self, gcmd: GCodeCommand) -> bool:
         """Load the filament into the hotend.
 
@@ -2078,6 +2105,7 @@ class MMU3:
         return self.load_filament_to_hotend()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_retry_unload_filament_from_hotend(self, gcmd: GCodeCommand) -> bool:
         """Retry unload, try correct misalignment of bondtech gear.
 
@@ -2090,6 +2118,7 @@ class MMU3:
         return self.retry_unload_filament_from_hotend()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_unload_filament_from_hotend(self, gcmd: GCodeCommand) -> bool:
         """Unload the filament from the nozzle (without RAMMING !!!).
 
@@ -2105,6 +2134,7 @@ class MMU3:
         return self.unload_filament_from_hotend()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_eject_ramming(self, gcmd: GCodeCommand) -> bool:
         """Eject the filament with ramming from the extruder nozzle to the MMU3.
 
@@ -2117,6 +2147,7 @@ class MMU3:
         return self.eject_ramming()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_unload_filament_from_hotend_with_ramming(self, gcmd: GCodeCommand) -> bool:
         """Unload from hotend with ramming.
 
@@ -2129,6 +2160,7 @@ class MMU3:
         return self.unload_filament_from_hotend_with_ramming()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_load_filament_to_finda(self, gcmd: GCodeCommand) -> bool:
         """Load filament until the FINDA detect it.
 
@@ -2144,6 +2176,7 @@ class MMU3:
         return self.load_filament_to_finda()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_load_filament_from_finda_to_extruder(self, gcmd: GCodeCommand) -> bool:
         """Load from the FINDA to the extruder gear.
 
@@ -2156,6 +2189,7 @@ class MMU3:
         return self.load_filament_from_finda_to_extruder()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_load_filament_to_extruder(self, gcmd: GCodeCommand) -> bool:
         """Load from MMU3 to extruder gear by calling LOAD_FILAMENT_TO_FINDA.
 
@@ -2171,6 +2205,7 @@ class MMU3:
         return self.load_filament_to_extruder()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_unload_filament_from_finda(self, gcmd: GCodeCommand) -> bool:
         """Unload filament until the FINDA detect it.
 
@@ -2186,6 +2221,7 @@ class MMU3:
         return self.unload_filament_from_finda()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_unload_filament_from_extruder_to_finda(self, gcmd: GCodeCommand) -> bool:
         """Unload from extruder gear to the FINDA.
 
@@ -2198,6 +2234,7 @@ class MMU3:
         return self.unload_filament_from_extruder_to_finda()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_unload_filament_from_extruder(self, gcmd: GCodeCommand) -> bool:
         """Unload from the extruder gear to the MMU3.
 
@@ -2213,6 +2250,7 @@ class MMU3:
         return self.unload_filament_from_extruder()
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_m702(self, gcmd: GCodeCommand) -> bool:
         """Unload filament if inserted into the IR sensor.
 
@@ -2239,6 +2277,7 @@ class MMU3:
         return True
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_eject_from_extruder(self, gcmd: GCodeCommand) -> bool:
         """Preheat the heater if needed and unload the filament with ramming.
 
@@ -2250,9 +2289,11 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.eject_from_extruder()
+        result = self.eject_from_extruder()
+        return result
 
     @auto_pause
+    @auto_disable_steppers
     def cmd_eject_before_home(self, gcmd: GCodeCommand) -> bool:
         """Eject from extruder gear to MMU3.
 
@@ -2266,6 +2307,7 @@ class MMU3:
 
     @auto_pause
     @measure_duration
+    @auto_disable_steppers
     def cmd_pulley_calibrate(self, gcmd: GCodeCommand) -> bool:
         """Calibrate pulley rotation_distance.
 
