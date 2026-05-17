@@ -17,5 +17,9 @@ M140 S0 ; turn off heatbed
 M104 S0 ; turn off temperature
 M107 ; turn off fan
 M84 X Y E ; disable motors
+; Disable MMU Steppers
+MANUAL_STEPPER STEPPER=pulley_stepper ENABLE=0
+MANUAL_STEPPER STEPPER=idler_stepper ENABLE=0
+MANUAL_STEPPER STEPPER=selector_stepper ENABLE=0
 
-SET_PIN PIN=main_led VALUE=0
+SET_PIN PIN=main_led VALUE=0 ; turn off main LED
