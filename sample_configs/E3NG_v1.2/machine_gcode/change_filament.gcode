@@ -8,6 +8,9 @@ M106 P2 S255
 {endif}
 T[next_extruder]
 G92 E0
+{if flush_length_1 + flush_length_2 + flush_length_3 + flush_length_4 <= 1}
+    WIPE_NOZZLE; no flushing has happened, just wipe the nozzle
+{endif}
 {if flush_length_1 > 1}
     M83
     G0 X212 Y248 F15000 ; Be sure that we are at flush position

@@ -1,3 +1,4 @@
+CLEAR_PAUSE ; To prevent "Already Paused" errors...
 SET_PIN PIN=main_led VALUE=1.00
 ; SET_FILAMENT_SENSOR SENSOR=my_filament_sensor ENABLE=0
 ; SET_FILAMENT_SENSOR SENSOR=encoder_sensor ENABLE=0
@@ -55,6 +56,5 @@ G92 E0
 ; Go to the filament change point
 G1 X212 Y248 F{travel_speed*0.5*60}
 G1 E2 F3000 ; un-retract filament
-WIPE_NOZZLE
 
 ; MZ FLOW TEMP START
