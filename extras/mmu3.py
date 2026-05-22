@@ -726,6 +726,18 @@ class MMU3:
         """
         return self.filament_switch_sensor.get_status(None)["filament_detected"]
 
+    def is_filament_moving(self) -> bool:
+        """Check if the filament is moving according to the filament motion sensor.
+
+        Returns:
+            bool: True if the filament is moving, False otherwise.
+        """
+        if not self.filament_motion_sensor:
+            # no filament motion sensor,
+            # assume it is always moving to avoid false runout triggers
+            return True
+        return self.filament_motion_sensor.get_status(None)["filament_detected"]
+
     def is_filament_in_finda(self) -> bool:
         """Return if the filament is in FINDA or not.
 
@@ -1170,9 +1182,14 @@ class MMU3:
         self.unselect_tool()
 
         if not self.is_filament_in_switch_sensor():
+            self.respond_debug("Filament is not in switch sensor after load!")
             return False
 
-        if self.enable_filament_cutter and self.extra_load_length > 0:
+        detection_length = 0
+        if self.filament_motion_sensor:
+            detection_length = self.filament_motion_sensor.detection_length * 2
+
+        if self.extra_load_length > detection_length:
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
@@ -1180,7 +1197,21 @@ class MMU3:
                 G90
                 G0 F{self.travel_speed * 60}
             """)
-            self.toolhead.wait_moves()
+        elif self.filament_motion_sensor:
+            # wiggle the filament back and forth and check the encoder sensor
+            # to make sure the filament is really grabbed by the extruder gear
+            detection_length = self.filament_motion_sensor.detection_length * 2
+            self.gcode.run_script_from_command(f"""
+                G91
+                G92 E0
+                G1 E{detection_length} F{self.pulley_load_to_extruder_speed * 60}
+                G90
+            """)
+        self.toolhead.wait_moves()
+
+        if self.filament_motion_sensor and not self.is_filament_moving():
+            self.respond_debug("Filament is not moving after load!")
+            return False
 
         self.respond_debug("Load Complete")
         return True
