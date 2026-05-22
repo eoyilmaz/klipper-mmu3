@@ -585,6 +585,9 @@ class MMU3:
         self.gcode.register_command("GET_MMU_PARAM", self.cmd_get_mmu_param)
         self.gcode.register_command("SET_MMU_PARAM", self.cmd_set_mmu_param)
         self.gcode.register_command(
+            "PRE_LOAD_FILAMENT_TO_FINDA", self.cmd_preload_filament_to_finda
+        )
+        self.gcode.register_command(
             "LOAD_FILAMENT_TO_FINDA_IN_LOOP", self.cmd_load_filament_to_finda_in_loop
         )
         self.gcode.register_command("ENDSTOPS_STATUS", self.cmd_endstops_status)
@@ -1291,6 +1294,34 @@ class MMU3:
             self.bowden_load_speed1,
             self.bowden_load_accel1,
         )
+        return True
+
+    def pre_load_filament_to_finda(self, filament_id: int) -> bool:
+        """Pre load the selected filament to FINDA.
+
+        Args:
+            filament_id (int): The filament id to pre load. If it is -1,
+                pre-load all filaments.
+        """
+        if self.is_paused:
+            return False
+
+        if filament_id < -1 or filament_id >= self.number_of_tools:
+            self.display_status_msg(f"Invalid filament id: {filament_id}")
+            return False
+
+        if filament_id == -1:
+            filament_ids = range(self.number_of_tools)
+        else:
+            filament_ids = [filament_id]
+
+        for fid in filament_ids:
+            self.select_tool(fid)
+            if not self.load_filament_to_finda():
+                return False
+            if not self.unload_filament_from_finda():
+                return False
+
         return True
 
     def load_filament_to_finda(self) -> bool:
@@ -2328,6 +2359,20 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         return self.pulley_calibrate()
+
+    @auto_pause
+    @auto_disable_steppers
+    def cmd_preload_filament_to_finda(self, gcmd: GCodeCommand) -> bool:
+        """Preload filament to finda.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        filament_id: int = gcmd.get_int("VALUE", -1)
+        return self.pre_load_filament_to_finda(filament_id)
 
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
         """Get any of the MMU parameters/attributes.
