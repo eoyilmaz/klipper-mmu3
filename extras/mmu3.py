@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from mcu import MCU_endstop
     from reactor import PollReactor as Reactor
     from toolhead import ToolHead
+    from extras.motion_queuing import PrinterMotionQueuing
 
     from extras.display_status import DisplayStatus
     from extras.filament_motion_sensor import EncoderSensor
@@ -356,6 +357,39 @@ class FilamentMotionSensorManager:
         return
 
 
+class ExtruderSynchronizer:
+    """Context manager to safely synchronize a manual stepper with the extruder.
+
+    Args:
+        mmu3 (MMU3): The MMU3 instance.
+        manual_stepper (ManualStepper): The stepper to synchronize with the extruder.
+    """
+
+    def __init__(self, mmu3: MMU3, manual_stepper: ManualStepper) -> None:
+        self.mmu3 = mmu3
+        self.manual_stepper = manual_stepper
+        self.orig_trapq = None
+
+    def __enter__(self) -> Self:
+        """Enter the context."""
+        self.orig_trapq = self.mmu3.sync_stepper_to_extruder(self.manual_stepper)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: None | type[BaseException],
+        exc_value: None | BaseException,
+        tb: None | TracebackType,
+    ) -> None:
+        """Exit the context.
+
+        Ignore the exceptions, if any, Klipper will handle it.
+        """
+        if self.orig_trapq is not None:
+            self.mmu3.unsync_stepper_from_extruder(self.manual_stepper, self.orig_trapq)
+        return
+
+
 class MMU3:
     """MMU3 class to manage the MMU3 multi-material unit.
 
@@ -378,6 +412,7 @@ class MMU3:
 
         self.mcu: None | MCU_endstop = None
         self.toolhead: None | ToolHead = None
+        self.motion_queuing : None | PrinterMotionQueuing = None
         self.extruder: None | PrinterExtruder = None
         self.extruder_heater: None | Heater = None
         self.heaters: None | PrinterHeaters = None
@@ -525,6 +560,7 @@ class MMU3:
     def _connect(self) -> None:
         """Handle klippy:connect event."""
         self.toolhead: ToolHead = self.printer.lookup_object("toolhead")
+        self.motion_queuing = self.printer.lookup_object("motion_queuing")
         self.gcode_move: GCodeMove = self.printer.lookup_object("gcode_move")
         self.extruder: PrinterExtruder = self.toolhead.get_extruder()
         self.heaters: PrinterHeaters = self.printer.lookup_object("heaters")
@@ -696,12 +732,8 @@ class MMU3:
         Returns:
             bool: True if the filament is present in FINDA, False otherwise.
         """
-        start_time = time.time()
         print_time = self.toolhead.get_last_move_time()
-        return_value = bool(self.pulley_stepper_endstop.query_endstop(print_time))
-        duration = time.time() - start_time
-        self.respond_debug(f"is_filament_in_finda took {duration:0.1f} seconds")
-        return return_value
+        return bool(self.pulley_stepper_endstop.query_endstop(print_time))
 
     def disable_steppers(
         self, steppers: None | ManualStepper | list[ManualStepper] = None
@@ -728,14 +760,50 @@ class MMU3:
         self.respond_debug("Disabling steppers ...")
         self.toolhead.wait_moves()
         for stepper in steppers:
-            stepper.dwell(self.pause_before_disabling_steppers)
+            # stepper.dwell(self.pause_before_disabling_steppers)
             stepper.do_enable(False)
-            stepper.dwell(self.pause_after_disabling_steppers)
+            # stepper.dwell(self.pause_after_disabling_steppers)
         self.respond_debug("Steppers disabled!")
 
         duration = time.time() - start_time
         self.respond_debug(f"disable_steppers took {duration:0.1f} seconds")
         return True
+
+    def sync_stepper_to_extruder(self, manual_stepper: ManualStepper) -> None:
+        """Synchronize the given stepper to the extruder so that they move together.
+
+        Args:
+            manual_stepper (ManualStepper): The stepper to synchronize.
+
+        Returns:
+            trapq: The original trapq of the stepper before synchronization,
+                which can be used to restore the original behavior later.
+        """
+        self.toolhead.wait_moves()
+        self.toolhead.flush_step_generation()
+        stepper = manual_stepper.rail.get_steppers()[0]
+        orig_trapq = stepper.get_trapq()
+        stepper.set_position([self.extruder.last_position, 0.0, 0.0])
+        stepper.set_trapq(self.extruder.get_trapq())
+        self.motion_queuing.check_step_generation_scan_windows()
+
+        return orig_trapq
+
+    def unsync_stepper_from_extruder(
+        self, manual_stepper: ManualStepper, trapq
+    ) -> None:
+        """Unsynchronize the given stepper from the extruder.
+
+        Args:
+            manual_stepper (ManualStepper): The stepper to unsynchronize.
+            trapq: The original trapq of the stepper before synchronization.
+        """
+        self.toolhead.wait_moves()
+        self.toolhead.flush_step_generation()
+        stepper = manual_stepper.rail.get_steppers()[0]
+        stepper.set_position([0.0, 0.0, 0.0])
+        stepper.set_trapq(trapq)
+        self.motion_queuing.check_step_generation_scan_windows()
 
     def validate_extruder_is_hot_enough(self) -> bool:
         """Validate if the extruder is hot enough.
@@ -881,6 +949,7 @@ class MMU3:
         Returns:
             bool: True, if filament loaded to FINDA, False otherwise.
         """
+        self.toolhead.wait_moves()
         for i in range(int(self.finda_load_retry)):
             self.pulley_stepper.do_set_position(0)
             self.pulley_stepper.do_homing_move(
@@ -1054,18 +1123,11 @@ class MMU3:
         if not self.validate_extruder_is_hot_enough():
             return False
 
-        self.respond_debug("Loading Filament To Hotend (Native Trapq Sync Mode Retry)...")
+        self.respond_debug(
+            "Loading Filament To Hotend (Native Trapq Sync Mode Retry)..."
+        )
 
-        self.toolhead.wait_moves()
-        self.toolhead.flush_step_generation()
-        motion_queuing = self.printer.lookup_object('motion_queuing')
-        stepper = self.pulley_stepper.rail.get_steppers()[0]
-        orig_trapq = stepper.get_trapq()
-        stepper.set_position([self.extruder.last_position, 0., 0.])
-        stepper.set_trapq(self.extruder.get_trapq())
-        motion_queuing.check_step_generation_scan_windows()
-
-        try:
+        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
@@ -1073,13 +1135,9 @@ class MMU3:
                 G90
             """)
             self.toolhead.wait_moves()
-        finally:
-            self.toolhead.flush_step_generation()
-            stepper.set_trapq(orig_trapq)
-            stepper.set_position([0., 0., 0.])
-            motion_queuing.check_step_generation_scan_windows()
 
         self.pulley_stepper.do_set_position(0)
+
         return True
 
     def load_filament_to_hotend(self) -> bool:
@@ -1096,16 +1154,7 @@ class MMU3:
 
         self.respond_debug("Loading Filament To Hotend (Native Trapq Sync Mode)...")
 
-        self.toolhead.wait_moves()
-        self.toolhead.flush_step_generation()
-        motion_queuing = self.printer.lookup_object('motion_queuing')
-        stepper = self.pulley_stepper.rail.get_steppers()[0]
-        orig_trapq = stepper.get_trapq()
-        stepper.set_position([self.extruder.last_position, 0., 0.])
-        stepper.set_trapq(self.extruder.get_trapq())
-        motion_queuing.check_step_generation_scan_windows()
-
-        try:
+        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
@@ -1113,11 +1162,6 @@ class MMU3:
                 G90
             """)
             self.toolhead.wait_moves()
-        finally:
-            self.toolhead.flush_step_generation()
-            stepper.set_trapq(orig_trapq)
-            stepper.set_position([0., 0., 0.])
-            motion_queuing.check_step_generation_scan_windows()
 
         if not self.is_filament_in_switch_sensor():
             for _ in range(self.load_retry):
@@ -1954,6 +1998,10 @@ class MMU3:
             for i in range(self.tool_change_retry):
                 if i > 0:
                     self.display_status_msg(f"Retry ({i + 1}): T{tool_id}...")
+
+                if i in range(1, self.tool_change_retry - 1):
+                    # on last try we'll home the mmu
+                    self.home_idler()
 
                 if not self.unload_tool():
                     self.respond_debug(f"Unload T{self.current_filament} failed!")
