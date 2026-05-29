@@ -114,6 +114,10 @@ def auto_pause(f: Callable) -> Callable:
 
     @wraps(f)
     def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+        if not self.is_enabled:
+            self.display_status_msg("MMU is not enabled!")
+            return False
+
         result = f(self, gcmd, *args, **kwargs)
         if not result and not self.is_paused:
             self.pause()
@@ -432,6 +436,7 @@ class MMU3:
 
         self.is_paused = False
         self.is_homed = False
+        self.is_enabled = True
         self.extruder_temp = None
         self.current_tool = None
         self.current_filament = None
@@ -598,6 +603,20 @@ class MMU3:
             "display_status"
         )
 
+    def get_status(self, event_time) -> dict:
+        """Return the status of the MMU3 for Klipper's template engine.
+
+        Returns:
+            dict: The status of the MMU3.
+        """
+        return {
+            "is_enabled": self.is_enabled,
+            "is_homed": self.is_homed,
+            "is_paused": self.is_paused,
+            "current_tool": self.current_tool,
+            "current_filament": self.current_filament,
+        }
+
     def respond_info(self, msg: str) -> None:
         """Respond info through the current GCodeCommand instance.
 
@@ -624,6 +643,8 @@ class MMU3:
 
     def register_commands(self) -> None:
         """Register new GCode commands."""
+        self.gcode.register_command("MMU_ENABLE", self.cmd_mmu_enable)
+        self.gcode.register_command("MMU_DISABLE", self.cmd_mmu_disable)
         self.gcode.register_command("PULLEY_CALIBRATE", self.cmd_pulley_calibrate)
         self.gcode.register_command("GET_MMU_PARAM", self.cmd_get_mmu_param)
         self.gcode.register_command("SET_MMU_PARAM", self.cmd_set_mmu_param)
@@ -1987,6 +2008,10 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
+        if not self.is_enabled:
+            self.display_status_msg("MMU is not enabled!")
+            return True
+
         return self.pause()
 
     def cmd_resume(self, gcmd: GCodeCommand) -> bool:
@@ -1998,6 +2023,10 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
+        if not self.is_enabled:
+            self.display_status_msg("MMU is not enabled!")
+            return True
+
         return self.resume()
 
     @auto_pause
@@ -2465,6 +2494,34 @@ class MMU3:
         """
         filament_id: int = gcmd.get_int("VALUE", -1)
         return self.pre_load_filament_to_finda(filament_id)
+
+    def cmd_mmu_enable(self, gcmd: GCodeCommand) -> bool:
+        """Enable or disable the MMU3.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        self.is_enabled = True
+        self.display_status_msg(f"MMU3 enabled: {self.is_enabled}")
+        return True
+
+    def cmd_mmu_disable(self, gcmd: GCodeCommand) -> bool:
+        """Disable the MMU3.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        self.is_enabled = False
+        # also disable steppers
+        self.disable_steppers()
+        self.display_status_msg(f"MMU3 enabled: {self.is_enabled}")
+        return True
 
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
         """Get any of the MMU parameters/attributes.
