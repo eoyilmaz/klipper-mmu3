@@ -1,5 +1,4 @@
-Klipper MMU3
-------------
+# Klipper MMU3
 
 https://github.com/user-attachments/assets/744a994b-a383-477e-98a1-324dcf308101
 
@@ -15,39 +14,126 @@ following features:
 - Support for [MMU3-12x project](https://github.com/cjbaar/prusa-mmu-12x)
 - Sensorless homing for the selector
 - MMU specific menus
+- Mainsail prompts
 - Cut filament in MMU functionality (Only available for MMU3-5x)
 - Smoother load/unload experience
+- Filament motion sensor support for increased load/unload reliability
 - Easier path to future implementations
 
-Currently, for ease of development, as it is hard to fit Klipper firmware to
-the board, instead of the Prusa MMBoard, an SKR Mini E3 v3 is utilized, and all
-the configuration files are based on that. But, theoretically this should work
-with the Prusa MMBoard.
+> [!CAUTION]
+>
+> Currently the Prusa MMBoard is not supported by Klipper, as the board relies
+> on "shift registers". A Klipper ready board is recommended in place of the
+> Prusa MMBoard. For the development of this extension an SKR Mini E3 v3 is
+> utilized, and all the example [configuration files](./sample_configs/E3NG_v1.2/)
+> are based on that.
 
-Installation
-------------
+## Installation
 
-No installation scripts yet. Just follow the steps:
+### Automated installation
 
-1. Copy the `mmu3.py` to `~/klipper/klippy/extras/`
-2. Copy `mmu3.cfg`, `mmu3_menus.cfg` and `beep.cfg` to your config folder, typically `printer_data/config`.
-3. Add `mmu3.cfg` to your `printer.cfg`.
-4. Update `mmu3.cfg` according to your setup.
-   - Specifically update the `filament_switch_sensor_name` and
-     `filament_motion_sensor_name` parameters to match your printer config.
+Just run the following to automatically install the extension:
 
-     ```ini
-     [mmu3 MMU3]
-     filament_switch_sensor_name: filament_switch_sensor my_filament_sensor
-     filament_motion_sensor_name: filament_motion_sensor encoder_sensor
-     ```
+```shell
+cd ~
+git clone https://github.com/eoyilmaz/klipper-mmu3.git
+cd klipper-mmu3
+./install.sh
+```
 
-Usage
------
+See the [Post Installation](#post-installation-both-automatic-and-manual-installation)
+section for post installation steps.
+
+### Manual Installation
+
+For manual installation follow these steps:
+
+1. Download the source:
+
+   ```shell
+   cd ~
+   git clone https://github.com/eoyilmaz/klipper-mmu3.git
+   cd ~/klipper-mmu3
+   ```
+
+2. Link the source files:
+
+   ```shell
+   ln -sf ./extras/mmu3.py ~/klipper/klippy/extras/
+   ln -sf ./extras/mmu3_mainsail_prompts.py ~/klipper/klippy/extras/
+   ```
+
+3. Copy/link the config files:
+
+   ```shell
+   cd klipper-mmu3
+   cp ~/klipper-mmu3/mmu3.cfg ~/printer_data/config/
+   cp ~/klipper-mmu3/mmu3-12x.cfg ~/printer_data/config/
+   ln -sf ~/klipper-mmu3/mmu3_menus.cfg ~/printer_data/config/
+   ln -sf ~/klipper-mmu3/beep.cfg ~/printer_data/config/
+   ```
+
+4. Add the following lines to your `printer.cfg`:
+
+   ```ini
+   [respond]
+   [include mmu3.cfg]
+   ```
+
+   or for MMU3-12x setup use:
+
+   ```ini
+   [respond]
+   [include mmu3-12x.cfg]
+   ```
+
+5. You can also optionally add an update section to `moonraker` for subsequent
+updates via `Fluidd` / `Mainsail` update managers.
+
+   ```ini
+   [update_manager klipper-mmu3]
+   type: git_repo
+   path: ~/klipper-mmu3/
+   origin: https://github.com/eoyilmaz/klipper-mmu3.git
+   primary_branch: main
+   managed_services: klipper
+   ```
+
+### Post Installation (both automatic and manual installation)
+
+Update `mmu3.cfg`/`mmu3-12x.cfg` according to your setup.
+
+Specifically update the `filament_switch_sensor_name`,
+`filament_switch_sensor_position` and `filament_motion_sensor_name` parameters
+to match your printer config.
+
+   ```ini
+   [mmu3 MMU3]
+   filament_switch_sensor_name: filament_switch_sensor my_filament_sensor
+   filament_switch_sensor_position: on_gears  # pre_gears, post_gears
+   filament_motion_sensor_name: filament_motion_sensor encoder_sensor
+   ```
+
+If you don't have a filament motion sensor you can omit it, but a filament
+switch sensor is needed. The `filament_switch_sensor_position` defines where
+the switch sensor is positioned and changes the behavior of the system. There
+are several values to choose from, for a classical Prusa printer where the
+switch sensor is on the gears you can set it to `on_gears`. If the filament
+switch sensor is before the gears (between FINDA sensor and gears) set it to
+`pre_gears` and `post_gears` if the sensor is positioned after the gears
+(between the gears and the hotend).
+
+## Usage
 
 It is very hard to explain all the functionalities here.
 
-Typically you don't need to know all the commands, the menus supply all the necessary functionality to prepare MMU for printing and troubleshoot. Just add the following GCode to your Machine start G-Code, somewhere after all the normal homing, bed leveling stuff finished and before any filament is used:
+You can investigate [sample configurations](./sample_configs/E3NG_v1.2/) to
+update your `printer.cfg` and slicer (currently Orca Slicer) GCode commands.
+
+Typically you don't need to know all the commands, the menus supply all the
+necessary functionality to prepare MMU for printing and troubleshoot. Just add
+the following GCode to your Machine start G-Code, somewhere after all the normal
+homing, bed leveling stuff finished and before any filament is used:
 
 ```gcode
 HOME_MMU
@@ -164,4 +250,3 @@ design.
    UNSELECT_TOOL
    UT
    ```
-
