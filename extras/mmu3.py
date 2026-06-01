@@ -12,7 +12,7 @@ from functools import partial, wraps
 from typing import TYPE_CHECKING, Callable
 
 # Local Imports
-from extras.mainsail_prompts import (
+from extras.mmu3_mainsail_prompts import (
     Button,
     ButtonGroup,
     FooterButton,
