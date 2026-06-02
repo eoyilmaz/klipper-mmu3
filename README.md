@@ -1,9 +1,10 @@
 # Klipper MMU3
-
+<p>
 <a href="https://youtube.com/shorts/FKF2l-djico?si=fWCuRNJlEBNnSdm8">
 <img src="./docs/images/mmu12x_e3ng_02_youtube.jpeg" width="160"></a>
 <img src="./docs/images/mmu12x_e3ng_01.jpeg" width="160">
 <img src="./docs/images/mmu12x_e3ng_02.jpeg" width="160">
+</p>
 
 This project contains the required config and code files to enable MMU3
 hardware on klipper based 3d printers.
