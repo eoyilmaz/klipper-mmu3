@@ -135,13 +135,12 @@ You can investigate [sample configurations](./sample_configs/E3NG_v1.2/) to
 update your `printer.cfg` and slicer (currently Orca Slicer) GCode commands.
 
 Typically you don't need to know all the commands, the menus supply all the
-necessary functionality to prepare MMU for printing and troubleshoot. Just add
-the following GCode to your Machine start G-Code, somewhere after all the normal
-homing, bed leveling stuff finished and before any filament is used:
+necessary functionality to prepare MMU for printing and troubleshoot.
+
+Just add the following GCode to your Machine start G-Code, somewhere after all
+the normal homing, bed leveling stuff finished and before any filament is used:
 
 ```gcode
-HOME_MMU
-SELECT_TOOL VALUE=-1
 T[initial_tool]
 ```
 
@@ -157,7 +156,16 @@ The extension supplies all the necessary gcode commands.
    Homes the MMU idler and selector. Typically add this to your Machine start
    G-Code command as explained above.
 
-3. `SELECT_TOOL`
+3. `HOME_IDLER`
+
+   Homes the idler only.
+
+4. `HOME_MMU_ONLY`
+
+   Homes the idler and selector, and tries to load the filament 0 to FINDA to
+   verify everything is working fine and unloads it. Very rarely used...
+
+5. `SELECT_TOOL`
 
    Selects the requested slot:
 
@@ -165,26 +173,26 @@ The extension supplies all the necessary gcode commands.
    SELECT_TOOL VALUE=0
    ```
 
-4. `LOAD_FILAMENT_TO_FINDA` / `UNLOAD_FILAMENT_FROM_FINDA`
+6. `LOAD_FILAMENT_TO_FINDA` / `UNLOAD_FILAMENT_FROM_FINDA`
 
    Loads/Unloads the filament to FINDA.
 
-5. `LOAD_FILAMENT_TO_EXTRUDER` / `UNLOAD_FILAMENT_FROM_EXTRUDER`
+7. `LOAD_FILAMENT_TO_EXTRUDER` / `UNLOAD_FILAMENT_FROM_EXTRUDER`
 
    Loads/Unloads the filament from extruder.
 
-6. `UNLOCK_MMU`
+8. `UNLOCK_MMU`
 
    Unlocks the MMU by moving the idler to the home position. Mostly needed when
    you need to pull/push the filament manually.
 
-7. `CUT_FILAMENT_IN_EXTRUDER`
+9. `CUT_FILAMENT_IN_EXTRUDER`
 
    This macro is defined in the `mmu3.cfg` and controls the movement required
    to cut the filament inside the extruder. This is called by the `Tx` commands
    if the `enable_filament_cutter` is set to `True`.
 
-8. `PULLEY_CALIBRATE`
+10. `PULLEY_CALIBRATE`
 
    This command is used to calibrate the pulley `rotation_distance` value. The
    process works like this:
@@ -213,6 +221,7 @@ design.
    EJECT_FROM_EXTRUDER
    EJECT_RAMMING
    ENDSTOPS_STATUS
+   GET_MMU_PARAM
    HOME_IDLER
    HOME_MMU
    HOME_MMU_ONLY
@@ -222,17 +231,22 @@ design.
    K3  ; Not supported with MMU3-12x
    K4  ; Not supported with MMU3-12x
    LOAD_FILAMENT_FROM_FINDA_TO_EXTRUDER
-   LOAD_FILAMENT_IN_EXTRUDER
    LOAD_FILAMENT_TO_EXTRUDER
    LOAD_FILAMENT_TO_FINDA
    LOAD_FILAMENT_TO_FINDA_IN_LOOP
+   LOAD_FILAMENT_TO_HOTEND
    LT
    M702
+   MMU_DISABLE
+   MMU_ENABLE
    PAUSE_MMU
+   PRE_LOAD_FILAMENT_TO_FINDA
    PULLEY_CALIBRATE
-   RETRY_LOAD_FILAMENT_IN_EXTRUDER
-   RETRY_UNLOAD_FILAMENT_IN_EXTRUDER
+   RESUME_MMU
+   RETRY_LOAD_FILAMENT_TO_HOTEND
+   RETRY_UNLOAD_FILAMENT_FROM_HOTEND
    SELECT_TOOL
+   SET_MMU_PARAM
    T0
    T1
    T2
@@ -248,8 +262,8 @@ design.
    UNLOAD_FILAMENT_FROM_EXTRUDER
    UNLOAD_FILAMENT_FROM_EXTRUDER_TO_FINDA
    UNLOAD_FILAMENT_FROM_FINDA
-   UNLOAD_FILAMENT_IN_EXTRUDER
-   UNLOAD_FILAMENT_IN_EXTRUDER_WITH_RAMMING
+   UNLOAD_FILAMENT_FROM_HOTEND
+   UNLOAD_FILAMENT_FROM_HOTEND_WITH_RAMMING
    UNLOCK_MMU
    UNSELECT_TOOL
    UT
