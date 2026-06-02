@@ -677,7 +677,7 @@ class MMU3:
             "LOAD_FILAMENT_TO_HOTEND", self.cmd_load_filament_to_hotend
         )
         self.gcode.register_command(
-            "RETRY_UNLOAD_FILAMENT_TO_HOTEND",
+            "RETRY_UNLOAD_FILAMENT_FROM_HOTEND",
             self.cmd_retry_unload_filament_from_hotend,
         )
         self.gcode.register_command(
