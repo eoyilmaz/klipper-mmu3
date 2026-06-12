@@ -793,7 +793,7 @@ class MMU3:
         """
         start_time = time.time()
         if steppers is None:
-            steppers = [self.pulley_stepper, self.selector_stepper, self.idler_stepper]
+            steppers = [self.pulley_stepper, self.selector_stepper] #, self.idler_stepper]
         elif isinstance(steppers, ManualStepper):
             steppers = [steppers]
 
@@ -874,29 +874,47 @@ class MMU3:
         # Home the idler
         self.respond_debug("Homing idler")
         self.idler_stepper.do_set_position(0)
-        # to make sure that the idler is not already at the endstop
-        # rotate it a little back
-        self.idler_stepper.do_move(
-            self.idler_homing_move_lengths[0],
-            self.idler_homing_speed,
-            self.idler_homing_accel,
-        )
+        self.toolhead.wait_moves()
+        self.respond_debug("Doing the fast move")
         # do a big rotation to ensure we hit the end stop
+        # let's try using a homing move...
+        self.idler_stepper.do_homing_move(
+            movepos=self.idler_homing_move_lengths[0],
+            speed=self.idler_homing_speed,
+            accel=self.idler_homing_accel,
+            probe_pos=False,
+            triggered=True,
+            check_trigger=True,
+        )
+        self.toolhead.wait_moves()
+        self.idler_stepper.do_set_position(0)
+
+        # rotate it a little back
+        self.respond_debug("Doing Slow Move")
         self.idler_stepper.do_move(
             self.idler_homing_move_lengths[1],
             self.idler_homing_speed,
             self.idler_homing_accel,
         )
-        # we must have hit the endstop
-        # this is the 0 position
+        self.toolhead.wait_moves()
         self.idler_stepper.do_set_position(0)
-        # move to the parking position
-        self.idler_stepper.do_move(
-            self.idler_positions[-1],
-            self.idler_speed,
-            self.idler_accel,
-            sync=False,
+
+        # do a second homing move, but slower
+        self.idler_stepper.do_homing_move(
+            movepos=self.idler_homing_move_lengths[2],
+            speed=self.idler_homing_speed / 3,
+            accel=self.idler_homing_accel / 3,
+            probe_pos=False,
+            triggered=True,
+            check_trigger=True,
         )
+        self.toolhead.wait_moves()
+        self.idler_stepper.do_set_position(0)
+
+        # park
+        self.unselect_tool()
+
+        self.respond_debug("Finished homing")
 
         return True
 
@@ -1433,6 +1451,7 @@ class MMU3:
             filament_ids = [filament_id]
 
         for fid in filament_ids:
+            self.respond_debug(f"Pre-loading T{fid}")
             self.select_tool(fid)
             if not self.load_filament_to_finda():
                 return False
@@ -1684,9 +1703,9 @@ class MMU3:
         for i in range(int(self.finda_unload_retry)):
             self.pulley_stepper.do_set_position(0)
             self.pulley_stepper.do_homing_move(
-                movepos=-self.finda_unload_length,
-                speed=self.finda_unload_speed,
-                accel=self.finda_unload_accel,
+                movepos=-self.bowden_unload_length,
+                speed=self.bowden_unload_speed,
+                accel=self.bowden_unload_accel,
                 probe_pos=False,
                 triggered=False,
                 check_trigger=False,
