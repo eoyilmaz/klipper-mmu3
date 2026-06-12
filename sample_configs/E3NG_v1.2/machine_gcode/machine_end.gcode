@@ -1,5 +1,9 @@
 ; MZ FLOW TEMP END
 
+; Call WIPE_NOZZLE so we park the nozzle away from the build area
+; to prevent any problems in UT to damage the printed parts.
+WIPE_NOZZLE
+
 ; Unload filament
 UT
 
