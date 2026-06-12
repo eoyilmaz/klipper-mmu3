@@ -16,7 +16,7 @@ missing on the original version. On top of the original version this has the
 following features:
 
 - Support for [MMU3-12x project](https://github.com/cjbaar/prusa-mmu-12x)
-- Sensorless homing for the selector
+- Sensorless homing for the selector and idler.
 - MMU specific menus
 - Mainsail prompts
 - Cut filament in MMU functionality (Only available for MMU3-5x)

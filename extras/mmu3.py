@@ -11,6 +11,9 @@ import time
 from functools import partial, wraps
 from typing import TYPE_CHECKING, Callable
 
+# Klipper Imports
+from extras.manual_stepper import ManualStepper
+
 # Local Imports
 from extras.mmu3_mainsail_prompts import (
     Button,
@@ -19,9 +22,6 @@ from extras.mmu3_mainsail_prompts import (
     Prompt,
     Text,
 )
-
-# Klipper Imports
-from extras.manual_stepper import ManualStepper
 
 if TYPE_CHECKING:
     import sys
@@ -40,13 +40,13 @@ if TYPE_CHECKING:
     from mcu import MCU_endstop
     from reactor import PollReactor as Reactor
     from toolhead import ToolHead
-    from extras.motion_queuing import PrinterMotionQueuing
 
     from extras.display_status import DisplayStatus
     from extras.filament_motion_sensor import EncoderSensor
     from extras.filament_switch_sensor import SwitchSensor
     from extras.gcode_move import GCodeMove
     from extras.heaters import Heater, PrinterHeaters
+    from extras.motion_queuing import PrinterMotionQueuing
     from extras.query_endstops import QueryEndstops
 
 
@@ -149,6 +149,8 @@ def auto_disable_steppers(f: Callable) -> Callable:
 
 
 class SwitchSensorPosition(enum.Enum):
+    """The position of the filament switch sensor."""
+
     PreGears = "pre_gears"
     OnGears = "on_gears"
     PostGears = "post_gears"
@@ -391,7 +393,6 @@ class ExtruderSynchronizer:
         """
         if self.orig_trapq is not None:
             self.mmu3.unsync_stepper_from_extruder(self.manual_stepper, self.orig_trapq)
-        return
 
 
 class MMU3:
@@ -462,8 +463,7 @@ class MMU3:
             "pulley_calibrate_pause_duration", 10
         )
         self.pulley_calibrate_filament_length = config.getfloat(
-            "pulley_calibrate_filament_length",
-            100
+            "pulley_calibrate_filament_length", 100
         )
         # bowden load
         self.bowden_load_length1 = config.getint("bowden_load_length1", 450)
@@ -603,8 +603,11 @@ class MMU3:
             "display_status"
         )
 
-    def get_status(self, event_time) -> dict:
+    def get_status(self, event_time: float) -> dict:
         """Return the status of the MMU3 for Klipper's template engine.
+
+        Args:
+            event_time (float): The current event time.
 
         Returns:
             dict: The status of the MMU3.
@@ -790,7 +793,7 @@ class MMU3:
         """
         start_time = time.time()
         if steppers is None:
-            steppers = [self.pulley_stepper, self.selector_stepper, self.idler_stepper]
+            steppers = [self.pulley_stepper, self.selector_stepper] #, self.idler_stepper]
         elif isinstance(steppers, ManualStepper):
             steppers = [steppers]
 
@@ -830,7 +833,7 @@ class MMU3:
         return orig_trapq
 
     def unsync_stepper_from_extruder(
-        self, manual_stepper: ManualStepper, trapq
+        self, manual_stepper: ManualStepper, trapq  # noqa: ANN001
     ) -> None:
         """Unsynchronize the given stepper from the extruder.
 
@@ -871,29 +874,47 @@ class MMU3:
         # Home the idler
         self.respond_debug("Homing idler")
         self.idler_stepper.do_set_position(0)
-        # to make sure that the idler is not already at the endstop
-        # rotate it a little back
-        self.idler_stepper.do_move(
-            self.idler_homing_move_lengths[0],
-            self.idler_homing_speed,
-            self.idler_homing_accel,
-        )
+        self.toolhead.wait_moves()
+        self.respond_debug("Doing the fast move")
         # do a big rotation to ensure we hit the end stop
+        # let's try using a homing move...
+        self.idler_stepper.do_homing_move(
+            movepos=self.idler_homing_move_lengths[0],
+            speed=self.idler_homing_speed,
+            accel=self.idler_homing_accel,
+            probe_pos=False,
+            triggered=True,
+            check_trigger=True,
+        )
+        self.toolhead.wait_moves()
+        self.idler_stepper.do_set_position(0)
+
+        # rotate it a little back
+        self.respond_debug("Doing Slow Move")
         self.idler_stepper.do_move(
             self.idler_homing_move_lengths[1],
             self.idler_homing_speed,
             self.idler_homing_accel,
         )
-        # we must have hit the endstop
-        # this is the 0 position
+        self.toolhead.wait_moves()
         self.idler_stepper.do_set_position(0)
-        # move to the parking position
-        self.idler_stepper.do_move(
-            self.idler_positions[-1],
-            self.idler_speed,
-            self.idler_accel,
-            sync=False,
+
+        # do a second homing move, but slower
+        self.idler_stepper.do_homing_move(
+            movepos=self.idler_homing_move_lengths[2],
+            speed=self.idler_homing_speed / 3,
+            accel=self.idler_homing_accel / 3,
+            probe_pos=False,
+            triggered=True,
+            check_trigger=True,
         )
+        self.toolhead.wait_moves()
+        self.idler_stepper.do_set_position(0)
+
+        # park
+        self.unselect_tool()
+
+        self.respond_debug("Finished homing")
 
         return True
 
@@ -1168,10 +1189,12 @@ class MMU3:
         )
 
         with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+            length = self.bowden_load_length3
+            speed = self.pulley_load_to_extruder_speed
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
-                G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
+                G1 E{length} F{speed * 60}
                 G90
             """)
             self.toolhead.wait_moves()
@@ -1195,10 +1218,12 @@ class MMU3:
         self.respond_debug("Loading Filament To Hotend (Native Trapq Sync Mode)...")
 
         with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+            length = self.bowden_load_length3
+            speed = self.pulley_load_to_extruder_speed
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
-                G1 E{self.bowden_load_length3} F{self.pulley_load_to_extruder_speed * 60}
+                G1 E{length} F{speed * 60}
                 G90
             """)
             self.toolhead.wait_moves()
@@ -1426,6 +1451,7 @@ class MMU3:
             filament_ids = [filament_id]
 
         for fid in filament_ids:
+            self.respond_debug(f"Pre-loading T{fid}")
             self.select_tool(fid)
             if not self.load_filament_to_finda():
                 return False
@@ -1467,6 +1493,10 @@ class MMU3:
     def load_filament_from_finda_to_extruder(self) -> bool:
         """Load from the FINDA to the extruder gear.
 
+        Move bowden_load_length1 then check the filament switch sensor.
+        If not triggered, push in bowden_load_length2 increments up to
+        load_retry times. Pause if filament never reaches the sensor.
+
         Returns:
             bool: True, if filament is loaded from FINDA to extruder, False
                 otherwise.
@@ -1479,21 +1509,66 @@ class MMU3:
             return False
 
         self.respond_debug("Loading filament from FINDA to extruder ...")
+
         self.pulley_stepper.do_set_position(0)
         self.pulley_stepper.do_move(
-            self.bowden_load_length1,
+            self.bowden_load_length1,  # initial bulk move by bowden_load_length1
             self.bowden_load_speed1,
             self.bowden_load_accel1,
         )
-        self.pulley_stepper.do_set_position(0)
-        self.pulley_stepper.do_move(
-            self.bowden_load_length2,
-            self.bowden_load_speed2,
-            self.bowden_load_accel2,
-            sync=False,
-        )
-        self.respond_debug("Loading done from FINDA to extruder")
 
+        # Check filament switch sensor after initial bowden move.
+        if (
+            self.filament_switch_sensor is not None
+            and self.filament_switch_sensor_position != SwitchSensorPosition.PostGears
+        ):
+            if self.is_filament_in_switch_sensor():
+                self.respond_debug("Filament detected at sensor")
+                self.respond_debug("Loading done from FINDA to extruder")
+                return True
+
+            # Not triggered yet - push incrementally up to load_retry times.
+            # Uses bowden_load_length2 as the increment size per retry.
+            self.respond_debug(
+                "Filament not yet at extruder sensor, pushing incrementally ..."
+            )
+            with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+                for attempt in range(self.load_retry):
+                    self.respond_debug(
+                        f"Extruder sensor retry {attempt + 1}/{self.load_retry}"
+                    )
+                    self.gcode.run_script_from_command(f"""
+                        G91
+                        G92 E0
+                        G1 E{self.bowden_load_length2} F{self.bowden_load_speed2 * 60}
+                        G90
+                    """)
+                    self.toolhead.wait_moves()
+                    # check sensor after each increment
+                    if self.is_filament_in_switch_sensor():
+                        self.respond_debug("Filament detected at extruder sensor")
+                        self.respond_debug("Loading done from FINDA to extruder")
+                        return True
+
+            # All retries exhausted, filament never reached sensor.
+            self.display_status_msg(
+                "Filament did not reach extruder sensor"
+                f" after {self.load_retry} retries!"
+            )
+            return False
+
+        # No sensor defined - fall back to original fixed distance behavior
+        # so existing setups without a sensor continue to work unchanged.
+        self.pulley_stepper.do_set_position(0)
+        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+            self.gcode.run_script_from_command(f"""
+                G91
+                G92 E0
+                G1 E{self.bowden_load_length2} F{self.bowden_load_speed2 * 60}
+                G90
+            """)
+
+        self.respond_debug("Loading done from FINDA to extruder")
         return True
 
     def load_filament_to_extruder(self) -> bool:
@@ -1628,9 +1703,9 @@ class MMU3:
         for i in range(int(self.finda_unload_retry)):
             self.pulley_stepper.do_set_position(0)
             self.pulley_stepper.do_homing_move(
-                movepos=-self.finda_unload_length,
-                speed=self.finda_unload_speed,
-                accel=self.finda_unload_accel,
+                movepos=-self.bowden_unload_length,
+                speed=self.bowden_unload_speed,
+                accel=self.bowden_unload_accel,
                 probe_pos=False,
                 triggered=False,
                 check_trigger=False,
@@ -2555,7 +2630,7 @@ class MMU3:
 
         if param.startswith("_"):
             # protect private parameters
-            return
+            return True
 
         if "," in value:
             temp_value = []
