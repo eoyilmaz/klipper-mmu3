@@ -1116,6 +1116,23 @@ class MMU3:
             self.display_status_msg(f"Invalid tool id: {tool_id}")
             return False
 
+        if self.is_filament_in_finda():
+            if self.current_tool is None:
+                self.display_status_msg(
+                    f"Filament detected in FINDA but no tool is selected. "
+                    f"Please remove the filament manually before selecting T{tool_id}."
+                )
+                return False
+            self.respond_debug(
+                f"Filament detected in FINDA while selecting T{tool_id}, "
+                f"unloading T{self.current_tool} first ..."
+            )
+            if not self.unload_filament_from_extruder():
+                self.display_status_msg(
+                    f"Failed to unload T{self.current_tool} before selecting T{tool_id}"
+                )
+                return False
+
         self.respond_debug(f"Select Tool {tool_id} ...")
         self.idler_stepper.do_move(
             self.idler_positions[tool_id],
@@ -1672,6 +1689,11 @@ class MMU3:
             ):
                 for _ in range(self.unload_retry):
                     self.retry_unload_filament_from_hotend()
+                if self.is_filament_in_switch_sensor():
+                    self.display_status_msg(
+                        "Filament stuck in extruder, cannot retract to FINDA!"
+                    )
+                    return False
 
             # if filament is still in finda, get into an unload loop...
             if (
