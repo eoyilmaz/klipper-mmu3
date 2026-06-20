@@ -2602,7 +2602,7 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         self.is_enabled = True
-        self.display_status_msg(f"MMU3 enabled: {self.is_enabled}")
+        self.display_status_msg("MMU Enabled")
         return True
 
     def cmd_mmu_disable(self, gcmd: GCodeCommand) -> bool:
@@ -2617,7 +2617,7 @@ class MMU3:
         self.is_enabled = False
         # also disable steppers
         self.disable_steppers()
-        self.display_status_msg(f"MMU3 enabled: {self.is_enabled}")
+        self.display_status_msg("MMU Disabled")
         return True
 
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
