@@ -858,7 +858,12 @@ class MMU3:
             bool: True if hotend is hot enough, False otherwise.
         """
         self.respond_debug("Checking hotend temperature")
-        if self.get_extruder_temperature() < self.min_temp_extruder:
+        current_temp = self.get_extruder_temperature()
+        self.respond_debug(f"Current hotend temperature: {current_temp:.1f}ºC")
+        self.respond_debug(
+            f"Minimum hotend temperature: {self.min_temp_extruder:.1f}ºC"
+        )
+        if current_temp < self.min_temp_extruder:
             self.display_status_msg("Extruder is not hot enough!")
             return False
         return True
