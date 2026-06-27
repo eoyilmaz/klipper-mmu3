@@ -747,7 +747,8 @@ class MMU3:
             float: The current extruder temperature.
         """
         print_time = self.toolhead.get_last_move_time()
-        return self.extruder_heater.get_temp(print_time)[0]
+        smooth_temp, target_temp = self.extruder_heater.get_temp(print_time)
+        return smooth_temp if smooth_temp != 0 else target_temp
 
     def is_filament_in_switch_sensor(self) -> bool:
         """Check if the filament present in the filament switch sensor.
@@ -857,7 +858,12 @@ class MMU3:
             bool: True if hotend is hot enough, False otherwise.
         """
         self.respond_debug("Checking hotend temperature")
-        if self.get_extruder_temperature() < self.min_temp_extruder:
+        current_temp = self.get_extruder_temperature()
+        self.respond_debug(f"Current hotend temperature: {current_temp:.1f}ºC")
+        self.respond_debug(
+            f"Minimum hotend temperature: {self.min_temp_extruder:.1f}ºC"
+        )
+        if current_temp < self.min_temp_extruder:
             self.display_status_msg("Extruder is not hot enough!")
             return False
         return True
@@ -890,7 +896,7 @@ class MMU3:
         self.idler_stepper.do_set_position(0)
 
         # rotate it a little back
-        self.respond_debug("Doing Slow Move")
+        self.respond_debug("Doing the slow move")
         self.idler_stepper.do_move(
             self.idler_homing_move_lengths[1],
             self.idler_homing_speed,
@@ -1116,6 +1122,13 @@ class MMU3:
             self.display_status_msg(f"Invalid tool id: {tool_id}")
             return False
 
+        if self.is_filament_in_finda() and self.current_filament is None:
+            self.display_status_msg(
+                "Filament detected in FINDA, "
+                "please unload it manually before selecting a tool."
+            )
+            return False
+
         self.respond_debug(f"Select Tool {tool_id} ...")
         self.idler_stepper.do_move(
             self.idler_positions[tool_id],
@@ -1311,7 +1324,6 @@ class MMU3:
 
         if self.current_tool is not None:
             self.respond_debug(f"Tool T{self.current_tool} selected!")
-            self.respond_debug("Auto unselecting it!")
             self.respond_debug(f"Auto unselecting T{self.current_tool}")
             self.unselect_tool()
 
@@ -1322,7 +1334,7 @@ class MMU3:
         self.gcode.run_script_from_command(f"""
             G91
             G92 E0
-            G1 E-{self.hotend_unload_speed} F{self.hotend_unload_speed * 60}
+            G1 E-{self.hotend_unload_length} F{self.hotend_unload_speed * 60}
             G90
             G92 E0
             ;G4 P1000
@@ -1377,7 +1389,6 @@ class MMU3:
 
         if self.current_tool is not None:
             self.respond_debug(f"Tool T{self.current_tool} selected!")
-            self.respond_debug("Auto unselecting it!")
             self.respond_debug(f"Auto unselecting T{self.current_tool}")
             self.unselect_tool()
 
@@ -1505,7 +1516,7 @@ class MMU3:
             return False
 
         if self.current_tool is None:
-            self.display_status_msg("Cannot load to extruder, tool not selected !!")
+            self.display_status_msg("Tool not selected!")
             return False
 
         self.respond_debug("Loading filament from FINDA to extruder ...")
@@ -1584,7 +1595,7 @@ class MMU3:
             return False
 
         if self.current_tool is None:
-            self.display_status_msg("Cannot load to extruder, tool not selected !!")
+            self.display_status_msg("Tool not selected, cannot load to extruder!")
             return False
 
         self.respond_debug("Loading filament from MMU to extruder ...")
@@ -1615,7 +1626,7 @@ class MMU3:
                 self.select_tool(self.current_filament)
             else:
                 self.display_status_msg(
-                    "Cannot unload from FINDA, tool not selected !!"
+                    "Tool not selected, cannot unload from FINDA!"
                 )
                 return False
 
@@ -1648,7 +1659,7 @@ class MMU3:
                 self.select_tool(self.current_filament)
             else:
                 self.display_status_msg(
-                    "Cannot unload from extruder to FINDA, tool not selected !!"
+                    "Tool not selected, cannot unload from extruder to FINDA!"
                 )
                 return False
 
@@ -1672,6 +1683,11 @@ class MMU3:
             ):
                 for _ in range(self.unload_retry):
                     self.retry_unload_filament_from_hotend()
+                if self.is_filament_in_switch_sensor():
+                    self.display_status_msg(
+                        "Filament stuck in extruder, cannot retract to FINDA!"
+                    )
+                    return False
 
             # if filament is still in finda, get into an unload loop...
             if (
@@ -1740,7 +1756,7 @@ class MMU3:
                 self.select_tool(self.current_filament)
             else:
                 self.display_status_msg(
-                    "Cannot unload from extruder to MMU, tool not selected !!"
+                    "Tool not selected, cannot unload from extruder to MMU!"
                 )
                 return False
 
@@ -1894,12 +1910,12 @@ class MMU3:
             bool: True, if tool is unloaded, False otherwise.
         """
         if self.is_paused:
+            self.respond_debug("MMU is paused, cannot unload tool!")
             return False
 
         if self.current_filament is None:
             self.respond_debug("Current filament is None!")
             if self.is_filament_in_finda():
-                self.respond_debug("Filament in FINDA!")
                 self.respond_debug("But there is a filament in FINDA!")
                 if self.current_tool is None:
                     self.respond_debug("Current Tool is also None!")
@@ -1915,6 +1931,8 @@ class MMU3:
             self.respond_debug("And no filament in FINDA")
             self.respond_debug("No need to unload!")
             return True
+        else:
+            self.respond_debug(f"Current filament is T{self.current_filament}")
 
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
             self.respond_debug(f"Cut T{self.current_filament}")
@@ -2580,7 +2598,7 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         self.is_enabled = True
-        self.display_status_msg(f"MMU3 enabled: {self.is_enabled}")
+        self.display_status_msg("MMU Enabled")
         return True
 
     def cmd_mmu_disable(self, gcmd: GCodeCommand) -> bool:
@@ -2595,7 +2613,7 @@ class MMU3:
         self.is_enabled = False
         # also disable steppers
         self.disable_steppers()
-        self.display_status_msg(f"MMU3 enabled: {self.is_enabled}")
+        self.display_status_msg("MMU Disabled")
         return True
 
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
