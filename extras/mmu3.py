@@ -747,7 +747,8 @@ class MMU3:
             float: The current extruder temperature.
         """
         print_time = self.toolhead.get_last_move_time()
-        return self.extruder_heater.get_temp(print_time)[0]
+        smooth_temp, target_temp = self.extruder_heater.get_temp(print_time)
+        return smooth_temp if smooth_temp != 0 else target_temp
 
     def is_filament_in_switch_sensor(self) -> bool:
         """Check if the filament present in the filament switch sensor.
