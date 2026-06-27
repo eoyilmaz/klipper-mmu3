@@ -896,7 +896,7 @@ class MMU3:
         self.idler_stepper.do_set_position(0)
 
         # rotate it a little back
-        self.respond_debug("Doing Slow Move")
+        self.respond_debug("Doing the slow move")
         self.idler_stepper.do_move(
             self.idler_homing_move_lengths[1],
             self.idler_homing_speed,
@@ -1122,22 +1122,12 @@ class MMU3:
             self.display_status_msg(f"Invalid tool id: {tool_id}")
             return False
 
-        if self.is_filament_in_finda():
-            if self.current_tool is None:
-                self.display_status_msg(
-                    f"Filament detected in FINDA but no tool is selected. "
-                    f"Please remove the filament manually before selecting T{tool_id}."
-                )
-                return False
-            self.respond_debug(
-                f"Filament detected in FINDA while selecting T{tool_id}, "
-                f"unloading T{self.current_tool} first ..."
+        if self.is_filament_in_finda() and self.current_filament is None:
+            self.display_status_msg(
+                "Filament detected in FINDA, "
+                "please unload it manually before selecting a tool."
             )
-            if not self.unload_filament_from_extruder():
-                self.display_status_msg(
-                    f"Failed to unload T{self.current_tool} before selecting T{tool_id}"
-                )
-                return False
+            return False
 
         self.respond_debug(f"Select Tool {tool_id} ...")
         self.idler_stepper.do_move(
