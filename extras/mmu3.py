@@ -1324,7 +1324,6 @@ class MMU3:
 
         if self.current_tool is not None:
             self.respond_debug(f"Tool T{self.current_tool} selected!")
-            self.respond_debug("Auto unselecting it!")
             self.respond_debug(f"Auto unselecting T{self.current_tool}")
             self.unselect_tool()
 
@@ -1335,7 +1334,7 @@ class MMU3:
         self.gcode.run_script_from_command(f"""
             G91
             G92 E0
-            G1 E-{self.hotend_unload_speed} F{self.hotend_unload_speed * 60}
+            G1 E-{self.hotend_unload_length} F{self.hotend_unload_speed * 60}
             G90
             G92 E0
             ;G4 P1000
@@ -1390,7 +1389,6 @@ class MMU3:
 
         if self.current_tool is not None:
             self.respond_debug(f"Tool T{self.current_tool} selected!")
-            self.respond_debug("Auto unselecting it!")
             self.respond_debug(f"Auto unselecting T{self.current_tool}")
             self.unselect_tool()
 
@@ -1518,7 +1516,7 @@ class MMU3:
             return False
 
         if self.current_tool is None:
-            self.display_status_msg("Cannot load to extruder, tool not selected !!")
+            self.display_status_msg("Tool not selected!")
             return False
 
         self.respond_debug("Loading filament from FINDA to extruder ...")
@@ -1597,7 +1595,7 @@ class MMU3:
             return False
 
         if self.current_tool is None:
-            self.display_status_msg("Cannot load to extruder, tool not selected !!")
+            self.display_status_msg("Tool not selected, cannot load to extruder!")
             return False
 
         self.respond_debug("Loading filament from MMU to extruder ...")
@@ -1628,7 +1626,7 @@ class MMU3:
                 self.select_tool(self.current_filament)
             else:
                 self.display_status_msg(
-                    "Cannot unload from FINDA, tool not selected !!"
+                    "Tool not selected, cannot unload from FINDA!"
                 )
                 return False
 
@@ -1661,7 +1659,7 @@ class MMU3:
                 self.select_tool(self.current_filament)
             else:
                 self.display_status_msg(
-                    "Cannot unload from extruder to FINDA, tool not selected !!"
+                    "Tool not selected, cannot unload from extruder to FINDA!"
                 )
                 return False
 
@@ -1758,7 +1756,7 @@ class MMU3:
                 self.select_tool(self.current_filament)
             else:
                 self.display_status_msg(
-                    "Cannot unload from extruder to MMU, tool not selected !!"
+                    "Tool not selected, cannot unload from extruder to MMU!"
                 )
                 return False
 
@@ -1912,12 +1910,12 @@ class MMU3:
             bool: True, if tool is unloaded, False otherwise.
         """
         if self.is_paused:
+            self.respond_debug("MMU is paused, cannot unload tool!")
             return False
 
         if self.current_filament is None:
             self.respond_debug("Current filament is None!")
             if self.is_filament_in_finda():
-                self.respond_debug("Filament in FINDA!")
                 self.respond_debug("But there is a filament in FINDA!")
                 if self.current_tool is None:
                     self.respond_debug("Current Tool is also None!")
@@ -1933,6 +1931,8 @@ class MMU3:
             self.respond_debug("And no filament in FINDA")
             self.respond_debug("No need to unload!")
             return True
+        else:
+            self.respond_debug(f"Current filament is T{self.current_filament}")
 
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
             self.respond_debug(f"Cut T{self.current_filament}")
