@@ -14,7 +14,7 @@ G1 X{print_bed_min[0] + 20} Y{print_bed_max[1] - 20} F{travel_speed * 0.5 * 60} 
 {if max_layer_z < max_print_height-10}G1 Z{z_offset+min(max_layer_z+5, max_print_height-10)} F600 ; Move print head further up{endif}
 
 SET_SKEW CLEAR=1
-PROBE_EDDY_NG_SET_TAP_OFFSET VALUE=0
+;PROBE_EDDY_NG_SET_TAP_OFFSET VALUE=0
 BED_MESH_CLEAR
 
 M140 S0 ; turn off heatbed
