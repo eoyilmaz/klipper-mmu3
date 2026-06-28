@@ -84,7 +84,7 @@ def measure_duration(f: Callable) -> Callable:
             "cmd_unload_tool": "UT",
             "cmd_select_tool": "SELECT_TOOL",
             "cmd_unselect_tool": "UNSELECT_TOOL",
-            "cmd_pulley_calibrate": "PULLEY_CALIBRATE",
+            "cmd_calibrate_pulley_rotation_distance": "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE",
             "cmd_home_mmu": "HOME_MMU",
         }.get(f.__name__, f.__name__)
         if f_name in ["T"]:
@@ -648,7 +648,13 @@ class MMU3:
         """Register new GCode commands."""
         self.gcode.register_command("MMU_ENABLE", self.cmd_mmu_enable)
         self.gcode.register_command("MMU_DISABLE", self.cmd_mmu_disable)
-        self.gcode.register_command("PULLEY_CALIBRATE", self.cmd_pulley_calibrate)
+        self.gcode.register_command(
+            "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE",
+            self.cmd_calibrate_pulley_rotation_distance,
+        )
+        self.gcode.register_command(
+            "MMU_CALIBRATE_BOWDEN_LENGTH", self.cmd_calibrate_bowden_load_length
+        )
         self.gcode.register_command("GET_MMU_PARAM", self.cmd_get_mmu_param)
         self.gcode.register_command("SET_MMU_PARAM", self.cmd_set_mmu_param)
         self.gcode.register_command(
@@ -1405,19 +1411,25 @@ class MMU3:
         self.respond_debug("Filament rammed and removed")
         return True
 
-    def pulley_calibrate(self) -> bool:
+    def calibrate_pulley_rotation_distance(self, length: float | None = None) -> bool:
         """Calibrate pulley rotation_distance value.
 
         This will first load the filament in to the FINDA, pause for
         `pulley_calibrate_pause_duration` seconds, and then pull exactly
-        `pulley_calibrate_filament_length` mm of filament and then pause. So,
-        that the pulled filament can be measured from behind the MMU.
+        `length` mm of filament and then pause. So, that the pulled filament
+        can be measured from behind the MMU.
+
+        Args:
+            length (float | None): Length of filament to pull in mm. Defaults
+                to `pulley_calibrate_filament_length` from config.
 
         Returns:
-            bool: True, if filament is pulled by
-                `pulley_calibrate_filament_length` mm, False in any other
-                errors.
+            bool: True, if filament is pulled by `length` mm, False in any
+                other errors.
         """
+        if length is None:
+            length = self.pulley_calibrate_filament_length
+
         # pull the filament to finda
         self.display_status_msg("Load to FINDA")
         if not self.load_filament_to_finda():
@@ -1430,15 +1442,117 @@ class MMU3:
             self.reactor.monotonic() + self.pulley_calibrate_pause_duration
         )
 
-        # now pull exactly `pulley_calibrate_filament_length` mm of filament.
-        self.display_status_msg(
-            f"Loading {self.pulley_calibrate_filament_length:.0f} mm"
-        )
+        # now pull exactly `length` mm of filament.
+        self.display_status_msg(f"Loading {length:.0f} mm")
         self.pulley_stepper.do_set_position(0)
         self.pulley_stepper.do_move(
-            self.pulley_calibrate_filament_length,
+            length,
             self.bowden_load_speed1,
             self.bowden_load_accel1,
+        )
+        return True
+
+    def calibrate_bowden_load_length(self, step: float = 10.0) -> bool:
+        """Auto-detect bowden_load_length1 by pushing filament to the switch sensor.
+
+        Loads filament to FINDA, then advances in `step` mm increments until
+        the filament switch sensor triggers. The total distance moved becomes
+        the new bowden_load_length1 and is staged in the configfile so
+        SAVE_CONFIG persists it.
+
+        PRE_GEARS: sensor is upstream of the extruder gears; pure pulley push.
+        ON_GEARS / POST_GEARS: filament must reach or pass through the extruder
+        gears to trigger the sensor; ExtruderSynchronizer is used and speed is
+        capped at half the extruder's max velocity so the extruder stepper is
+        not overdriven.
+
+        Args:
+            step (float): Push increment size in mm. Default: 10.0.
+
+        Returns:
+            bool: True if calibration succeeded, False otherwise.
+        """
+        if self.is_paused:
+            return False
+
+        if self.current_tool is None:
+            self.display_status_msg("Select a tool before calibrating bowden length!")
+            return False
+
+        if self.filament_switch_sensor is None:
+            self.display_status_msg(
+                "No filament switch sensor configured - cannot calibrate!"
+            )
+            return False
+
+        # ON_GEARS: sensor is at the gears; filament tip must enter the gears.
+        # POST_GEARS: sensor is past the gears; filament must pass through them.
+        # Both need ExtruderSynchronizer so the gears turn in sync with the push.
+        needs_extruder_sync = self.filament_switch_sensor_position in (
+            SwitchSensorPosition.OnGears,
+            SwitchSensorPosition.PostGears,
+        )
+
+        self.display_status_msg("Loading to FINDA for bowden calibration...")
+        if not self.load_filament_to_finda():
+            return False
+
+        if self.is_filament_in_switch_sensor():
+            self.display_status_msg(
+                "Switch sensor already triggered - unload filament before calibrating!"
+            )
+            return False
+
+        self.display_status_msg("Measuring bowden length...")
+        max_distance = 1500.0
+        total_moved = 0.0
+        triggered = False
+
+        if needs_extruder_sync:
+            sync_speed = min(self.bowden_load_speed1, self.extruder.max_e_velocity / 2)
+            with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+                while total_moved < max_distance:
+                    move_amount = min(step, max_distance - total_moved)
+                    self.gcode.run_script_from_command(f"""
+                        G91
+                        G92 E0
+                        G1 E{move_amount:.3f} F{sync_speed * 60:.0f}
+                        G90
+                    """)
+                    self.toolhead.wait_moves()
+                    total_moved += move_amount
+                    if self.is_filament_in_switch_sensor():
+                        triggered = True
+                        break
+        else:
+            self.pulley_stepper.do_set_position(0)
+            while total_moved < max_distance:
+                next_pos = min(total_moved + step, max_distance)
+                self.pulley_stepper.do_move(
+                    next_pos,
+                    self.bowden_load_speed1,
+                    self.bowden_load_accel1,
+                )
+                self.toolhead.wait_moves()
+                total_moved = next_pos
+                if self.is_filament_in_switch_sensor():
+                    triggered = True
+                    break
+
+        if not triggered:
+            self.display_status_msg(
+                f"Filament did not reach sensor after {total_moved:.0f}mm!"
+            )
+            return False
+
+        new_length = int(total_moved)
+        self.bowden_load_length1 = new_length
+
+        self.display_status_msg(f"bowden_load_length1 = {new_length}mm")
+        self.respond_info(
+            f"Bowden calibration complete.\n"
+            f"Measured bowden_load_length1 = {new_length}\n"
+            f"Update your config file: bowden_load_length1: {new_length}"
         )
         return True
 
@@ -2563,8 +2677,11 @@ class MMU3:
     @auto_pause
     @measure_duration
     @auto_disable_steppers
-    def cmd_pulley_calibrate(self, gcmd: GCodeCommand) -> bool:
+    def cmd_calibrate_pulley_rotation_distance(self, gcmd: GCodeCommand) -> bool:
         """Calibrate pulley rotation_distance.
+
+        Optional parameter LENGTH=<mm> overrides the configured
+        pulley_calibrate_filament_length for this run.
 
         Args:
             gcmd (GCodeCommand): The G-Code command.
@@ -2572,7 +2689,28 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.pulley_calibrate()
+        length = gcmd.get_float(
+            "LENGTH", self.pulley_calibrate_filament_length, above=0.0
+        )
+        return self.calibrate_pulley_rotation_distance(length=length)
+
+    @auto_pause
+    @measure_duration
+    @auto_disable_steppers
+    def cmd_calibrate_bowden_load_length(self, gcmd: GCodeCommand) -> bool:
+        """Auto-detect bowden_load_length1 by pushing to the filament switch sensor.
+
+        Optional parameter STEP=<mm> (default 10) sets the push increment.
+        After calibration, update bowden_load_length1 in your config file.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+
+        Returns:
+            bool: True if calibration succeeded, False otherwise.
+        """
+        step = gcmd.get_float("STEP", 10.0, above=0.0)
+        return self.calibrate_bowden_load_length(step=step)
 
     @auto_pause
     @auto_disable_steppers
