@@ -1,4 +1,9 @@
 ; Change filament G-Code Start
+; directly go to the nozzle wiper starting position
+; as when we raise the nozzle here, it accumulates
+; too much filament on top of the wipe tower
+G1 X175 Y248 F15000
+G1 X212
 G1 Z{max_layer_z + 3.0} F1200
 M400
 M106 P1 S255
@@ -62,9 +67,9 @@ G92 E0
 G1 E-[new_retract_length_toolchange] F1800
 M400
 G1 Z{max_layer_z + 3.0} F3000
-{if layer_z <= (initial_layer_print_height + 0.001)}
-    M204 S[initial_layer_acceleration]
-{else}
-    M204 S[default_acceleration]
-{endif}
+;{if layer_z <= (initial_layer_print_height + 0.001)}
+;    M204 S[initial_layer_acceleration]
+;{else}
+;    M204 S[default_acceleration]
+;{endif}
 ; Change filament G-Code End
