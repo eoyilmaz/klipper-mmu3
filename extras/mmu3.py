@@ -118,7 +118,13 @@ def auto_pause(f: Callable) -> Callable:
             self.display_status_msg("MMU is not enabled!")
             return False
 
-        result = f(self, gcmd, *args, **kwargs)
+        try:
+            result = f(self, gcmd, *args, **kwargs)
+        except self.printer.command_error as e:
+            self.respond_debug(f"{f.__name__} raised an error: {e}")
+            self.display_status_msg(str(e))
+            result = False
+
         if not result and not self.is_paused:
             self.pause()
         return result
@@ -141,8 +147,10 @@ def auto_disable_steppers(f: Callable) -> Callable:
 
     @wraps(f)
     def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
-        result = f(self, gcmd, *args, **kwargs)
-        self.disable_steppers()
+        try:
+            result = f(self, gcmd, *args, **kwargs)
+        finally:
+            self.disable_steppers()
         return result
 
     return wrapped_f
@@ -800,7 +808,7 @@ class MMU3:
         """
         start_time = time.time()
         if steppers is None:
-            steppers = [self.pulley_stepper, self.selector_stepper] #, self.idler_stepper]
+            steppers = [self.pulley_stepper, self.selector_stepper, self.idler_stepper]
         elif isinstance(steppers, ManualStepper):
             steppers = [steppers]
 
