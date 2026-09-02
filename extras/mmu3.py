@@ -2231,6 +2231,18 @@ class MMU3:
             self.finda_unload_accel,
         )
         self.pulley_stepper.do_set_position(0)
+        self.toolhead.wait_moves()
+
+        # The filament can be sitting well past FINDA, up the bowden tube
+        # (e.g. after a failed load-to-extruder attempt), so the short move
+        # above is not enough to clear it. Keep pulling in bowden-length
+        # steps until FINDA stops triggering instead of giving up.
+        if (
+            self.is_filament_in_finda()
+            and not self.unload_filament_to_finda_in_loop()
+        ):
+            return False
+
         if self.is_filament_in_finda():
             return False
         self.current_filament = None
