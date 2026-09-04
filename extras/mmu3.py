@@ -59,7 +59,7 @@ STEPPER_NAME_MAP = {
     SELECTOR_STEPPER_NAME: "Selector",
 }
 
-IS_DIGIT = re.compile("[0-9\-.]+")
+IS_DIGIT = re.compile(r"[0-9\-.]+")
 
 
 class FilamentPos(enum.IntEnum):
@@ -225,11 +225,15 @@ def auto_pause(f: Callable) -> Callable:
     paused automatically.
 
     The recovery prompt is re-shown whenever a ``pending_operation`` is still
-    outstanding once the command returns - including on success. Mainsail
-    closes the prompt as soon as any of its buttons is clicked, so a
-    recovery-dialog action (``Unlock MMU``, ``Unload Tool``, ``Home MMU``)
-    that succeeds without actually resolving the original failure must not
-    strand the operator without a way back to ``Retry``/``Resume``.
+    outstanding once the command returns - including on success. Of the
+    recovery dialog's buttons (see :meth:`MMU3.show_recovery_prompt`), only
+    "Retry" and "Resume" close it (via the ``PROMPT_CLOSE_AND_RUN_COMMAND``
+    macro sending ``action:prompt_end``); "Unlock MMU", "Unload Tool" and
+    "Home MMU" run their gcode with the dialog left open. Re-showing here
+    keeps the dialog in sync with any state that command changed (e.g. a
+    fresh failure re-promoting a different ``current_operation``) and
+    recovers the dialog for an operator whose client lost it (e.g. a page
+    reload) despite the server-side prompt never having been closed.
 
     Args:
         f (Callable): The function to wrap.
@@ -2892,9 +2896,11 @@ class MMU3:
         """Park the idler, stop the delayed stop of the heater.
 
         Unlocking does not resolve whatever operation originally failed, so
-        re-show the recovery dialog if one is still pending - otherwise the
-        operator is left with no way back to "Retry"/"Resume" once Mainsail
-        closes this prompt.
+        re-show the recovery dialog if one is still pending. Its own button
+        ("Unlock MMU") does not close the dialog server-side, but this also
+        runs when UNLOCK_MMU is invoked outside of it (e.g. from the
+        console), so it doubles as a way to bring the dialog back for an
+        operator whose client lost it.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
