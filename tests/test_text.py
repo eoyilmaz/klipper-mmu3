@@ -1,7 +1,7 @@
 """Tests for the Text class."""
 
 # Local Imports
-from mainsail_prompts import Text
+from extras.mmu3_mainsail_prompts import Text
 
 
 def test_to_gcode_returns_the_gcode_command():

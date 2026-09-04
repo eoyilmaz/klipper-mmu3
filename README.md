@@ -186,13 +186,28 @@ The extension supplies all the necessary gcode commands.
    Unlocks the MMU by moving the idler to the home position. Mostly needed when
    you need to pull/push the filament manually.
 
-9. `CUT_FILAMENT_IN_EXTRUDER`
+9. `MMU_RETRY`
+
+   Retries the load/unload operation that failed and left the MMU paused. The
+   MMU remembers what it was doing (which `Tx`, load or unload) and how far it
+   got, so you don't have to - `MMU_RETRY` re-checks the FINDA / switch / motion
+   sensors and resumes from where the filament actually is instead of starting
+   the whole sequence over. `printer["mmu3 MMU3"].pending_operation` and
+   `.filament_pos` report the current recovery state.
+
+10. `RESUME_MMU` / `RESUME_MMU FORCE=1`
+
+   `RESUME_MMU` runs `MMU_RETRY` first and only resumes the print if the
+   recovery succeeds. `RESUME_MMU FORCE=1` clears the pending operation and
+   resumes anyway - use it when you have already fixed the filament by hand.
+
+11. `CUT_FILAMENT_IN_EXTRUDER`
 
    This macro is defined in the `mmu3.cfg` and controls the movement required
    to cut the filament inside the extruder. This is called by the `Tx` commands
    if the `enable_filament_cutter` is set to `True`.
 
-10. `PULLEY_CALIBRATE`
+12. `PULLEY_CALIBRATE`
 
    This command is used to calibrate the pulley `rotation_distance` value. The
    process works like this:
@@ -239,6 +254,7 @@ design.
    M702
    MMU_DISABLE
    MMU_ENABLE
+   MMU_RETRY
    PAUSE_MMU
    PRE_LOAD_FILAMENT_TO_FINDA
    PULLEY_CALIBRATE

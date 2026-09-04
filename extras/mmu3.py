@@ -59,7 +59,126 @@ STEPPER_NAME_MAP = {
     SELECTOR_STEPPER_NAME: "Selector",
 }
 
-IS_DIGIT = re.compile("[0-9\-.]+")
+IS_DIGIT = re.compile(r"[0-9\-.]+")
+
+
+class FilamentPos(enum.IntEnum):
+    """Where the filament tip currently sits along the MMU -> nozzle path.
+
+    Ordered: a larger value means the filament has moved further from the
+    MMU toward the nozzle, so the planner can compare positions directly.
+    """
+
+    UNLOADED = 0
+    AT_FINDA = 1
+    AT_EXTRUDER = 2
+    IN_HOTEND = 3
+    LOADED = 4
+
+    def __repr__(self) -> str:
+        """Return the enum name for str().
+
+        Returns:
+            str: The name as the string representation.
+        """
+        return self.name
+
+    __str__ = __repr__
+
+
+class OperationKind(enum.Enum):
+    """The kind of high level MMU operation that can be pending recovery."""
+
+    TOOL_CHANGE = "tool_change"
+    LOAD = "load"
+    UNLOAD = "unload"
+    HOME = "home"
+    CUT = "cut"
+    EJECT = "eject"
+
+    def __repr__(self) -> str:
+        """Return the enum name for str().
+
+        Returns:
+            str: The name as the string representation.
+        """
+        return self.name
+
+    __str__ = __repr__
+
+
+class Operation:
+    """A record of the high level MMU operation currently in progress.
+
+    Held on ``MMU3.current_operation`` while a top level command runs and
+    promoted to ``MMU3.pending_operation`` by :func:`auto_pause` when the
+    command fails, so recovery (``MMU_RETRY`` / ``RESUME_MMU``) knows what the
+    operator was trying to do without them having to remember it.
+
+    Args:
+        kind (OperationKind): The kind of operation.
+        from_tool (None | int): The tool that was loaded when the operation
+            started.
+        to_tool (None | int): The tool the operation is trying to end up with
+            loaded. ``None`` for pure unloads / homing.
+    """
+
+    def __init__(
+        self,
+        kind: OperationKind,
+        from_tool: None | int = None,
+        to_tool: None | int = None,
+    ) -> None:
+        self.kind = kind
+        self.from_tool = from_tool
+        self.to_tool = to_tool
+        self.filament_pos_at_fail: None | FilamentPos = None
+        self.error: str = ""
+
+    @property
+    def target_pos(self) -> FilamentPos:
+        """Return the filament position this operation is trying to reach."""
+        loads = (OperationKind.TOOL_CHANGE, OperationKind.LOAD)
+        if self.kind in loads and self.to_tool is not None:
+            return FilamentPos.LOADED
+        return FilamentPos.UNLOADED
+
+    def describe(self) -> str:
+        """Return a short human readable summary for prompts and status.
+
+        Returns:
+            str: e.g. ``"Tool change T1 => T2 - stopped with filament at the
+            extruder"``.
+        """
+        if self.kind == OperationKind.TOOL_CHANGE and self.from_tool is not None:
+            what = f"Tool change T{self.from_tool} => T{self.to_tool}"
+        elif self.kind in (OperationKind.TOOL_CHANGE, OperationKind.LOAD):
+            what = f"Load T{self.to_tool}"
+        elif self.kind == OperationKind.UNLOAD:
+            what = (
+                f"Unload T{self.from_tool}"
+                if self.from_tool is not None
+                else "Unload filament"
+            )
+        elif self.kind == OperationKind.CUT:
+            what = f"Cut T{self.to_tool}"
+        elif self.kind == OperationKind.EJECT:
+            what = "Eject filament"
+        else:
+            what = "Home MMU"
+
+        stage = {
+            FilamentPos.UNLOADED: "at the MMU",
+            FilamentPos.AT_FINDA: "at FINDA",
+            FilamentPos.AT_EXTRUDER: "at the extruder",
+            FilamentPos.IN_HOTEND: "in the hotend",
+            FilamentPos.LOADED: "loaded",
+        }.get(self.filament_pos_at_fail)
+        if stage:
+            what = f"{what} - stopped with filament {stage}"
+        if self.error:
+            what = f"{what} ({self.error})"
+        return what
 
 
 def measure_duration(f: Callable) -> Callable:
@@ -105,6 +224,17 @@ def auto_pause(f: Callable) -> Callable:
     If any of the decorated commands fail (return False), the MMU3 instance is
     paused automatically.
 
+    The recovery prompt is re-shown whenever a ``pending_operation`` is still
+    outstanding once the command returns - including on success. Of the
+    recovery dialog's buttons (see :meth:`MMU3.show_recovery_prompt`), only
+    "Retry" and "Resume" close it (via the ``PROMPT_CLOSE_AND_RUN_COMMAND``
+    macro sending ``action:prompt_end``); "Unlock MMU", "Unload Tool" and
+    "Home MMU" run their gcode with the dialog left open. Re-showing here
+    keeps the dialog in sync with any state that command changed (e.g. a
+    fresh failure re-promoting a different ``current_operation``) and
+    recovers the dialog for an operator whose client lost it (e.g. a page
+    reload) despite the server-side prompt never having been closed.
+
     Args:
         f (Callable): The function to wrap.
 
@@ -118,12 +248,80 @@ def auto_pause(f: Callable) -> Callable:
             self.display_status_msg("MMU is not enabled!")
             return False
 
-        result = f(self, gcmd, *args, **kwargs)
+        error_msg = ""
+        try:
+            result = f(self, gcmd, *args, **kwargs)
+        except self.printer.command_error as e:
+            self.respond_debug(f"{f.__name__} raised an error: {e}")
+            self.display_status_msg(str(e))
+            error_msg = str(e)
+            result = False
+
         if not result and not self.is_paused:
+            # remember what the operator was trying to do so recovery
+            # (MMU_RETRY / RESUME_MMU) does not depend on their memory
+            if self.current_operation is not None:
+                self.current_operation.filament_pos_at_fail = self.filament_pos
+                if error_msg:
+                    self.current_operation.error = error_msg
+                self.pending_operation = self.current_operation
+                self.current_operation = None
             self.pause()
+
+        if self.pending_operation is not None:
+            self.show_recovery_prompt()
         return result
 
     return wrapped_f
+
+
+def track_operation(kind: OperationKind) -> Callable:
+    """Decorator factory that records the high level operation in progress.
+
+    Sets ``self.current_operation`` to a fresh :class:`Operation` on entry and
+    clears ``current_operation`` when the wrapped command succeeds. Must be
+    stacked *inside* :func:`auto_pause` so that, on failure, ``auto_pause``
+    still sees a populated ``current_operation`` to promote.
+
+    ``pending_operation`` is only cleared here if this command's success
+    actually satisfies it (see :meth:`MMU3._pending_operation_resolved`).
+    Recovery-dialog buttons (``UNLOCK_MMU``, ``UT``, ``HOME_MMU``, ...) are
+    unrelated one-off commands from the operator's point of view - each is a
+    diagnostic/manual-recovery step, not necessarily a completion of whatever
+    originally failed, so a lone success here must not silently discard a
+    still-unfinished ``pending_operation``. Only :meth:`MMU3.retry_pending_operation`
+    (``MMU_RETRY`` / ``RESUME_MMU``) and a forced resume actually clear it
+    unconditionally.
+
+    Args:
+        kind (OperationKind): The kind of operation the wrapped command performs.
+
+    Returns:
+        Callable: The actual decorator.
+    """
+
+    def decorator(f: Callable) -> Callable:
+        @wraps(f)
+        def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+            to_tool = kwargs.get("tool_id")
+            if to_tool is None and gcmd is not None:
+                with contextlib.suppress(Exception):
+                    to_tool = gcmd.get_int("VALUE", None)
+            self.current_operation = Operation(
+                kind=kind,
+                from_tool=self.current_filament,
+                to_tool=to_tool,
+            )
+            result = f(self, gcmd, *args, **kwargs)
+            if result:
+                self.current_operation = None
+                if self._pending_operation_resolved():
+                    self.pending_operation = None
+            return result
+
+        return wrapped_f
+
+    return decorator
 
 
 def auto_disable_steppers(f: Callable) -> Callable:
@@ -141,14 +339,16 @@ def auto_disable_steppers(f: Callable) -> Callable:
 
     @wraps(f)
     def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
-        result = f(self, gcmd, *args, **kwargs)
-        self.disable_steppers()
+        try:
+            result = f(self, gcmd, *args, **kwargs)
+        finally:
+            self.disable_steppers()
         return result
 
     return wrapped_f
 
 
-class SwitchSensorPosition(enum.Enum):
+class FilamentSwitchSensorPosition(enum.Enum):
     """The position of the filament switch sensor."""
 
     PreGears = "pre_gears"
@@ -167,25 +367,26 @@ class SwitchSensorPosition(enum.Enum):
 
     @classmethod
     def to_switch_sensor_position(
-        cls, position: str | SwitchSensorPosition
-    ) -> SwitchSensorPosition:
-        """Convert the given position value to a SwitchSensorPosition enum.
+        cls, position: str | FilamentSwitchSensorPosition
+    ) -> FilamentSwitchSensorPosition:
+        """Convert the given position value to a FilamentSwitchSensorPosition enum.
 
         Args:
-            position (str | SwitchSensorPosition]): The value to convert to a
-                SwitchSensorPosition.
+            position (str | FilamentSwitchSensorPosition]): The value to convert to a
+                FilamentSwitchSensorPosition.
 
         Raises:
             TypeError: Input value type is invalid.
             ValueError: Input value is invalid.
 
         Returns:
-            SwitchSensorPosition: The enum.
+            FilamentSwitchSensorPosition: The enum.
         """
-        if not isinstance(position, (str, SwitchSensorPosition)):
+        valid = [e.name for e in cls] + [e.value for e in cls]
+        if not isinstance(position, (str, FilamentSwitchSensorPosition)):
             raise TypeError(
-                "position should be a SwitchSensorPosition enum value or one of "
-                f"{[m.name for m in cls] + [e.value for e in cls]}, "
+                "position should be a FilamentSwitchSensorPosition enum value "
+                f"or one of {valid}, "
                 f"not {position.__class__.__name__}: '{position}'"
             )
         if isinstance(position, str):
@@ -194,9 +395,8 @@ class SwitchSensorPosition(enum.Enum):
             position_lower_case = position.lower()
             if position_lower_case not in position_name_lut:
                 raise ValueError(
-                    "position should be a SwitchSensorPosition enum value or one of "
-                    f"{[e.name for e in cls] + [e.value for e in cls]}, "
-                    f"not '{position}'"
+                    "position should be a FilamentSwitchSensorPosition enum "
+                    f"value or one of {valid}, not '{position}'"
                 )
 
             return cls.__members__[position_name_lut[position_lower_case]]
@@ -403,9 +603,12 @@ class MMU3:
     """
 
     def __init__(self, config: ConfigWrapper) -> None:
-        self._last_command_failed = None
-        self._last_command_failed_args = None
-        self._last_command_failed_kwargs = None
+        # recovery state: what the operator is currently asking for
+        # (current_operation) and what failed and is waiting to be retried
+        # (pending_operation). Both are in-memory only and cleared on a
+        # Klipper restart.
+        self.current_operation: None | Operation = None
+        self.pending_operation: None | Operation = None
 
         self.printer: Printer = config.get_printer()
         self.gcode: GCodeDispatch = self.printer.lookup_object("gcode")
@@ -429,7 +632,7 @@ class MMU3:
         self.selector_stepper_endstop: None | MCU_endstop = None
         self.display_status: None | DisplayStatus = None
         self.filament_switch_sensor: None | SwitchSensor = None
-        self.filament_switch_sensor_position: None | SwitchSensorPosition = None
+        self.filament_switch_sensor_position: None | FilamentSwitchSensorPosition = None
         self.filament_motion_sensor: None | EncoderSensor = None
 
         # state variables
@@ -441,6 +644,8 @@ class MMU3:
         self.extruder_temp = None
         self.current_tool = None
         self.current_filament = None
+        # how far the filament tip has moved from the MMU toward the nozzle
+        self.filament_pos = FilamentPos.UNLOADED
 
         # statistics variables
         self.number_of_material_changes = 0
@@ -549,9 +754,10 @@ class MMU3:
         self.unload_retry = config.getint("unload_retry", 5)
         self.tool_change_retry = config.getint("tool_change_retry", 5)
         self.filament_switch_sensor_position = (
-            SwitchSensorPosition.to_switch_sensor_position(
+            FilamentSwitchSensorPosition.to_switch_sensor_position(
                 config.get(
-                    "filament_switch_sensor_position", SwitchSensorPosition.OnGears
+                    "filament_switch_sensor_position",
+                    FilamentSwitchSensorPosition.OnGears,
                 )
             )
         )
@@ -568,6 +774,7 @@ class MMU3:
         # register commands
         self.register_commands()
         self.printer.register_event_handler("klippy:connect", self._connect)
+        self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _connect(self) -> None:
         """Handle klippy:connect event."""
@@ -603,6 +810,30 @@ class MMU3:
             "display_status"
         )
 
+    def _handle_ready(self) -> None:
+        """Handle klippy:ready - reconcile the tracked state with the sensors.
+
+        In-memory state is lost on a restart, so on the way up derive the real
+        filament position from the sensors (e.g. after a firmware restart in the
+        middle of a print the filament is still physically loaded).
+
+        The ``klippy:ready`` handlers run under ``reactor.assert_no_pause()``,
+        but :meth:`assess_filament_pos` queries the FINDA endstop and flushes the
+        lookahead, both of which pause the reactor. Defer the assessment to a
+        reactor callback that fires once the main event loop is running, where
+        pausing is allowed. A failure there must never disturb startup.
+        """
+        self.reactor.register_callback(self._assess_filament_pos_on_ready)
+
+    def _assess_filament_pos_on_ready(self, eventtime: float) -> None:
+        """Run the deferred startup filament-position assessment.
+
+        Args:
+            eventtime (float): The reactor event time (unused).
+        """
+        with contextlib.suppress(Exception):
+            self.assess_filament_pos()
+
     def get_status(self, event_time: float) -> dict:
         """Return the status of the MMU3 for Klipper's template engine.
 
@@ -618,6 +849,12 @@ class MMU3:
             "is_paused": self.is_paused,
             "current_tool": self.current_tool,
             "current_filament": self.current_filament,
+            "filament_pos": self.filament_pos.name,
+            "pending_operation": (
+                self.pending_operation.describe()
+                if self.pending_operation is not None
+                else None
+            ),
         }
 
     def respond_info(self, msg: str) -> None:
@@ -669,6 +906,7 @@ class MMU3:
         self.gcode.register_command("HOME_MMU_ONLY", self.cmd_home_mmu_only)
         self.gcode.register_command("PAUSE_MMU", self.cmd_pause)
         self.gcode.register_command("RESUME_MMU", self.cmd_resume)
+        self.gcode.register_command("MMU_RETRY", self.cmd_mmu_retry)
 
         for i in range(self.number_of_tools):
             self.gcode.register_command(f"T{i}", partial(self.cmd_tx, tool_id=i))
@@ -800,7 +1038,7 @@ class MMU3:
         """
         start_time = time.time()
         if steppers is None:
-            steppers = [self.pulley_stepper, self.selector_stepper] #, self.idler_stepper]
+            steppers = [self.pulley_stepper, self.selector_stepper, self.idler_stepper]
         elif isinstance(steppers, ManualStepper):
             steppers = [steppers]
 
@@ -840,7 +1078,9 @@ class MMU3:
         return orig_trapq
 
     def unsync_stepper_from_extruder(
-        self, manual_stepper: ManualStepper, trapq  # noqa: ANN001
+        self,
+        manual_stepper: ManualStepper,
+        trapq,  # noqa: ANN001
     ) -> None:
         """Unsynchronize the given stepper from the extruder.
 
@@ -889,7 +1129,7 @@ class MMU3:
         self.toolhead.wait_moves()
         self.respond_debug("Doing the fast move")
         # do a big rotation to ensure we hit the end stop
-        # let's try using a homing move...
+        # let's try using a homing move...
         self.idler_stepper.do_homing_move(
             movepos=self.idler_homing_move_lengths[0],
             speed=self.idler_homing_speed,
@@ -911,7 +1151,7 @@ class MMU3:
         self.toolhead.wait_moves()
         self.idler_stepper.do_set_position(0)
 
-        # do a second homing move, but slower
+        # do a second homing move, but slower
         self.idler_stepper.do_homing_move(
             movepos=self.idler_homing_move_lengths[2],
             speed=self.idler_homing_speed / 3,
@@ -1007,6 +1247,7 @@ class MMU3:
 
         self.current_tool = None
         self.current_filament = None
+        self.filament_pos = FilamentPos.UNLOADED
         self.unselect_tool()
         self.is_homed = True
         self.respond_debug("Homing MMU ended ...")
@@ -1077,12 +1318,35 @@ class MMU3:
         self.disable_steppers()
         return True
 
-    def resume(self) -> bool:
-        """Resume the MMU.
+    def resume(self, force: bool = False) -> bool:
+        """Resume the MMU and the print.
+
+        If there is a pending operation left over from a failed load/unload,
+        retry it first and only resume the print if that succeeds. ``force``
+        skips the retry, clears the pending operation and resumes anyway
+        ("I fixed it by hand").
+
+        Args:
+            force (bool): Skip the pending-operation retry.
 
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
+        if self.pending_operation is not None and not force:
+            self.respond_info(
+                f"Pending MMU operation: {self.pending_operation.describe()}"
+            )
+            if not self.retry_pending_operation():
+                self.display_status_msg(
+                    "MMU recovery failed - fix the issue then RESUME_MMU again "
+                    "(or RESUME_MMU FORCE=1 to override)."
+                )
+                return False
+
+        if force:
+            self.pending_operation = None
+            self.current_operation = None
+
         self.is_paused = False
         self.gcode.run_script_from_command(
             """
@@ -1093,6 +1357,240 @@ class MMU3:
         )
         self.toolhead.wait_moves()
         return True
+
+    def _switch_sensor_bounds(
+        self, in_finda: bool, in_switch: bool
+    ) -> tuple[FilamentPos, FilamentPos]:
+        """Return the (floor, ceiling) the sensors allow for ``filament_pos``.
+
+        What the filament switch sensor proves depends on where it sits
+        (``filament_switch_sensor_position``):
+
+        * ``PreGears`` / ``OnGears`` - the sensor is at or before the extruder
+          gears. Triggered proves the filament has reached the gears but cannot
+          tell IN_HOTEND / LOADED apart (the strand keeps the sensor triggered
+          once loaded). Not triggered proves the filament is *not* past the
+          gears, so it is at most AT_FINDA.
+        * ``PostGears`` - the sensor is after the gears. Triggered proves the
+          filament has passed through them (>= IN_HOTEND). Not triggered still
+          allows the tip to be sitting in the gears (AT_EXTRUDER).
+
+        FINDA sits at the MMU output and stays triggered for every loaded
+        state, so ``not in_finda and not in_switch`` is the only unambiguous
+        "unloaded".
+        """
+        post_gears = (
+            self.filament_switch_sensor_position
+            == FilamentSwitchSensorPosition.PostGears
+        )
+        if in_switch:
+            floor = FilamentPos.IN_HOTEND if post_gears else FilamentPos.AT_EXTRUDER
+            return floor, FilamentPos.LOADED
+        if in_finda:
+            ceiling = FilamentPos.AT_EXTRUDER if post_gears else FilamentPos.AT_FINDA
+            return FilamentPos.AT_FINDA, ceiling
+        return FilamentPos.UNLOADED, FilamentPos.UNLOADED
+
+    def assess_filament_pos(self) -> FilamentPos:
+        """Derive the filament position from the physical sensors.
+
+        Clamps ``self.filament_pos`` into the ``[floor, ceiling]`` window the
+        FINDA and filament switch sensor allow (see
+        :meth:`_switch_sensor_bounds`), so it can neither claim more progress
+        than the sensors support nor keep stale progress the sensors have
+        ruled out, and reconciles ``self.current_filament``. This replaces the
+        ad-hoc ``current_filament``-from-FINDA fixups scattered through the
+        unload helpers.
+
+        Returns:
+            FilamentPos: The assessed (and now stored) position.
+        """
+        in_finda = self.is_filament_in_finda()
+        in_switch = self.is_filament_in_switch_sensor()
+
+        floor, ceiling = self._switch_sensor_bounds(in_finda, in_switch)
+        self.filament_pos = min(max(self.filament_pos, floor), ceiling)
+
+        if self.filament_pos == FilamentPos.UNLOADED:
+            self.current_filament = None
+        elif self.current_filament is None:
+            # filament is somewhere in the path; best guess is the selected tool
+            self.current_filament = self.current_tool
+
+        self.respond_debug(
+            f"assess_filament_pos: FINDA={in_finda} switch={in_switch} "
+            f"pos={self.filament_switch_sensor_position} "
+            f"-> {self.filament_pos} (filament T{self.current_filament})"
+        )
+        return self.filament_pos
+
+    def _load_path(self) -> list:
+        """Ordered forward transitions as ``(reached_pos, step_fn)`` pairs."""
+        return [
+            (FilamentPos.AT_FINDA, self.load_filament_to_finda),
+            (FilamentPos.AT_EXTRUDER, self.load_filament_from_finda_to_extruder),
+            (FilamentPos.LOADED, self.load_filament_to_hotend),
+        ]
+
+    def _unload_path(self) -> list:
+        """Ordered reverse transitions as ``(reached_pos, step_fn)`` pairs."""
+        return [
+            (FilamentPos.AT_EXTRUDER, self.unload_filament_from_hotend),
+            (FilamentPos.AT_FINDA, self.unload_filament_from_extruder_to_finda),
+            (FilamentPos.UNLOADED, self.unload_filament_from_finda),
+        ]
+
+    def move_filament_to(
+        self, target_pos: FilamentPos, tool_id: None | int = None
+    ) -> bool:
+        """Run only the sub-steps between the current position and ``target_pos``.
+
+        Shared by the normal load/unload paths and by recovery, so a retry after
+        a mid-load failure continues from where it stopped instead of repeating
+        the whole chain (e.g. a 450 mm bowden move).
+
+        Args:
+            target_pos (FilamentPos): The position to reach.
+            tool_id (None | int): Tool to select before any forward move.
+                Defaults to ``current_tool``; unload sub-steps auto-select from
+                ``current_filament``.
+
+        Returns:
+            bool: True if ``filament_pos`` reached ``target_pos``.
+        """
+        if self.is_paused:
+            return False
+        if self.filament_pos == target_pos:
+            return True
+        if target_pos > self.filament_pos:
+            return self._load_toward(target_pos, tool_id)
+        return self._unload_toward(target_pos)
+
+    def _load_toward(self, target_pos: FilamentPos, tool_id: None | int) -> bool:
+        """Run the forward sub-steps needed to reach ``target_pos``."""
+        if tool_id is None:
+            tool_id = self.current_tool
+        if tool_id is None:
+            self.display_status_msg("Cannot load, no tool selected!")
+            return False
+        if (
+            self.filament_pos <= FilamentPos.AT_FINDA
+            and self.current_tool != tool_id
+            and not self.select_tool(tool_id)
+        ):
+            return False
+        for reached_pos, step_fn in self._load_path():
+            if self.filament_pos < reached_pos <= target_pos and not step_fn():
+                return False
+        return self.filament_pos >= target_pos
+
+    def _unload_toward(self, target_pos: FilamentPos) -> bool:
+        """Run the reverse sub-steps needed to reach ``target_pos``."""
+        for reached_pos, step_fn in self._unload_path():
+            if target_pos <= reached_pos < self.filament_pos and not step_fn():
+                return False
+        return self.filament_pos <= target_pos
+
+    def _pending_operation_resolved(self) -> bool:
+        """Whether the current filament state satisfies ``pending_operation``.
+
+        Used by :func:`track_operation` so that an unrelated command
+        succeeding - e.g. clicking "Unload Tool" or "Home MMU" in the
+        recovery dialog to manually work on a stuck filament - does not
+        silently discard a still-unfinished ``pending_operation``. Only
+        actually reaching the position (and, for loads, the tool) the
+        pending operation was trying to reach counts as resolving it.
+
+        Returns:
+            bool: True if there is no pending operation, or the current
+                filament state already satisfies it.
+        """
+        op = self.pending_operation
+        if op is None:
+            return True
+        if op.target_pos == FilamentPos.UNLOADED:
+            return self.filament_pos == FilamentPos.UNLOADED
+        return (
+            self.filament_pos >= op.target_pos
+            and self.current_filament == op.to_tool
+        )
+
+    def retry_pending_operation(self) -> bool:
+        """Re-drive ``self.pending_operation`` after checking the sensors.
+
+        Clears ``is_paused`` for the duration so the sub-steps can run, then
+        restores it to reflect whether recovery succeeded.
+
+        Returns:
+            bool: True if the pending operation completed (or there was none).
+        """
+        op = self.pending_operation
+        if op is None:
+            self.display_status_msg("No pending MMU operation to retry.")
+            return True
+
+        self.respond_info(f"Retrying: {op.describe()}")
+        self.is_paused = False
+        ok = False
+        try:
+            self.assess_filament_pos()
+            if op.kind == OperationKind.HOME:
+                ok = self.home_mmu()
+            elif op.kind == OperationKind.CUT and op.to_tool is not None:
+                ok = self.cut_filament_in_mmu(op.to_tool)
+            elif op.kind == OperationKind.TOOL_CHANGE and op.to_tool is not None:
+                ok = self.unload_tool() and self.load_tool(op.to_tool)
+            elif op.kind == OperationKind.LOAD and op.to_tool is not None:
+                ok = self.load_tool(op.to_tool)
+            else:  # UNLOAD / EJECT / degenerate TOOL_CHANGE
+                ok = self.unload_tool()
+        finally:
+            self.is_paused = not ok
+
+        if ok:
+            self.pending_operation = None
+            self.current_operation = None
+            self.display_status_msg(f"{op.describe()} => recovered")
+        return ok
+
+    def show_recovery_prompt(self) -> None:
+        """Show the Mainsail recovery dialog for the pending operation.
+
+        The retry button is generic (``MMU_RETRY``) so the same dialog serves
+        every failure site - the operator never has to remember the original
+        command.
+        """
+        message = (
+            self.pending_operation.describe()
+            if self.pending_operation is not None
+            else "MMU operation failed."
+        )
+        prompt = Prompt(
+            headline="MMU Error",
+            widgets=[
+                Text(text=message),
+                ButtonGroup(
+                    buttons=[
+                        Button(label="Unlock MMU", gcode="UNLOCK_MMU"),
+                        Button(label="Unload Tool", gcode="UT"),
+                    ],
+                ),
+                ButtonGroup(
+                    buttons=[
+                        Button(label="Home MMU", gcode="HOME_MMU"),
+                        Button(
+                            label="Retry",
+                            gcode="PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=MMU_RETRY",
+                        ),
+                    ],
+                ),
+                FooterButton(
+                    label="Resume",
+                    gcode="PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=RESUME_MMU",
+                ),
+            ],
+        )
+        self.gcode.run_script_from_command(prompt.to_gcode())
 
     def unlock(self) -> bool:
         """Park the idler, stop the delayed stop of the heater.
@@ -1257,6 +1755,8 @@ class MMU3:
             self.respond_debug("Filament is not in switch sensor after load!")
             return False
 
+        self.filament_pos = max(self.filament_pos, FilamentPos.IN_HOTEND)
+
         detection_length = 0
         if self.filament_motion_sensor:
             detection_length = self.filament_motion_sensor.detection_length * 2
@@ -1285,6 +1785,7 @@ class MMU3:
             self.respond_debug("Filament is not moving after load!")
             return False
 
+        self.filament_pos = FilamentPos.LOADED
         self.respond_debug("Load Complete")
         return True
 
@@ -1326,6 +1827,7 @@ class MMU3:
 
         if not self.is_filament_in_switch_sensor():
             self.respond_debug("No filament in extruder")
+            self.filament_pos = min(self.filament_pos, FilamentPos.AT_EXTRUDER)
             return True
 
         if self.current_tool is not None:
@@ -1347,7 +1849,10 @@ class MMU3:
         """)
         self.toolhead.wait_moves()
 
-        if self.filament_switch_sensor_position != SwitchSensorPosition.PreGears:
+        if (
+            self.filament_switch_sensor_position
+            != FilamentSwitchSensorPosition.PreGears
+        ):
             if self.is_filament_in_switch_sensor():
                 for _ in range(self.unload_retry):
                     self.retry_unload_filament_from_hotend()
@@ -1355,6 +1860,7 @@ class MMU3:
             if self.is_filament_in_switch_sensor():
                 return False
 
+        self.filament_pos = min(self.filament_pos, FilamentPos.AT_EXTRUDER)
         self.respond_debug("Filament removed")
         return True
 
@@ -1489,8 +1995,8 @@ class MMU3:
         # POST_GEARS: sensor is past the gears; filament must pass through them.
         # Both need ExtruderSynchronizer so the gears turn in sync with the push.
         needs_extruder_sync = self.filament_switch_sensor_position in (
-            SwitchSensorPosition.OnGears,
-            SwitchSensorPosition.PostGears,
+            FilamentSwitchSensorPosition.OnGears,
+            FilamentSwitchSensorPosition.PostGears,
         )
 
         self.display_status_msg("Loading to FINDA for bowden calibration...")
@@ -1601,6 +2107,13 @@ class MMU3:
             self.display_status_msg("Cannot load to FINDA, tool not selected !!")
             return False
 
+        if self.enable_no_selector_mode:
+            # no per-tool FINDA stage in 5in1 mode - the spool feeds straight
+            # to the extruder, mirroring load_filament_to_extruder()
+            self.current_filament = self.current_tool
+            self.filament_pos = max(self.filament_pos, FilamentPos.AT_FINDA)
+            return True
+
         self.respond_debug("Loading filament to FINDA ...")
         if not self.load_filament_to_finda_in_loop():
             self.pulley_stepper.do_set_position(0)
@@ -1612,6 +2125,7 @@ class MMU3:
         #     return False
 
         self.current_filament = self.current_tool
+        self.filament_pos = max(self.filament_pos, FilamentPos.AT_FINDA)
         self.respond_debug("Loading done to FINDA")
         return True
 
@@ -1645,11 +2159,13 @@ class MMU3:
         # Check filament switch sensor after initial bowden move.
         if (
             self.filament_switch_sensor is not None
-            and self.filament_switch_sensor_position != SwitchSensorPosition.PostGears
+            and self.filament_switch_sensor_position
+            != FilamentSwitchSensorPosition.PostGears
         ):
             if self.is_filament_in_switch_sensor():
                 self.respond_debug("Filament detected at sensor")
                 self.respond_debug("Loading done from FINDA to extruder")
+                self.filament_pos = max(self.filament_pos, FilamentPos.AT_EXTRUDER)
                 return True
 
             # Not triggered yet - push incrementally up to load_retry times.
@@ -1673,6 +2189,9 @@ class MMU3:
                     if self.is_filament_in_switch_sensor():
                         self.respond_debug("Filament detected at extruder sensor")
                         self.respond_debug("Loading done from FINDA to extruder")
+                        self.filament_pos = max(
+                            self.filament_pos, FilamentPos.AT_EXTRUDER
+                        )
                         return True
 
             # All retries exhausted, filament never reached sensor.
@@ -1694,6 +2213,7 @@ class MMU3:
             """)
 
         self.respond_debug("Loading done from FINDA to extruder")
+        self.filament_pos = max(self.filament_pos, FilamentPos.AT_EXTRUDER)
         return True
 
     def load_filament_to_extruder(self) -> bool:
@@ -1734,14 +2254,18 @@ class MMU3:
         if self.is_paused:
             return False
 
+        if self.enable_no_selector_mode:
+            # no per-tool FINDA stage in 5in1 mode
+            self.current_filament = None
+            self.filament_pos = FilamentPos.UNLOADED
+            return True
+
         if self.current_tool is None:
             if self.current_filament is not None:
                 # Auto select tool
                 self.select_tool(self.current_filament)
             else:
-                self.display_status_msg(
-                    "Tool not selected, cannot unload from FINDA!"
-                )
+                self.display_status_msg("Tool not selected, cannot unload from FINDA!")
                 return False
 
         self.respond_debug("Unloading filament from FINDA ...")
@@ -1752,9 +2276,22 @@ class MMU3:
             self.finda_unload_accel,
         )
         self.pulley_stepper.do_set_position(0)
+        self.toolhead.wait_moves()
+
+        # The filament can be sitting well past FINDA, up the bowden tube
+        # (e.g. after a failed load-to-extruder attempt), so the short move
+        # above is not enough to clear it. Keep pulling in bowden-length
+        # steps until FINDA stops triggering instead of giving up.
+        if (
+            self.is_filament_in_finda()
+            and not self.unload_filament_to_finda_in_loop()
+        ):
+            return False
+
         if self.is_filament_in_finda():
             return False
         self.current_filament = None
+        self.filament_pos = FilamentPos.UNLOADED
         self.respond_debug("Unloading done from FINDA")
         return True
 
@@ -1792,7 +2329,8 @@ class MMU3:
             # if the filament sensor is pre-gears, check if we were able to
             # pull the filament out.
             if (
-                self.filament_switch_sensor_position == SwitchSensorPosition.PreGears
+                self.filament_switch_sensor_position
+                == FilamentSwitchSensorPosition.PreGears
                 and self.is_filament_in_switch_sensor()
             ):
                 for _ in range(self.unload_retry):
@@ -1818,6 +2356,7 @@ class MMU3:
                 self.bowden_unload_speed,
                 self.bowden_unload_accel,
             )
+        self.filament_pos = min(self.filament_pos, FilamentPos.AT_FINDA)
         self.respond_debug("Done unloading from FINDA!")
         return True
 
@@ -2011,11 +2550,13 @@ class MMU3:
             return False
 
         self.respond_debug(f"LT {tool_id}")
-        if not self.select_tool(tool_id):
+        if self.filament_pos < FilamentPos.AT_EXTRUDER and not self.select_tool(
+            tool_id
+        ):
             return False
-        if not self.load_filament_to_extruder():
-            return False
-        return self.load_filament_to_hotend()
+        # planner runs only the steps still needed to reach LOADED, so a retry
+        # after a mid-load failure does not repeat the whole bowden move
+        return self.move_filament_to(FilamentPos.LOADED, tool_id)
 
     def unload_tool(self) -> bool:
         """Unload filament from nozzle to MMU3.
@@ -2055,11 +2596,8 @@ class MMU3:
             self.toolhead.wait_moves()
 
         self.respond_debug(f"UT {self.current_filament}")
-        if not self.unload_filament_from_hotend():
-            return False
-        if not self.select_tool(self.current_filament):
-            return False
-        return self.unload_filament_from_extruder()
+        # planner runs only the steps still needed to reach UNLOADED
+        return self.move_filament_to(FilamentPos.UNLOADED, self.current_filament)
 
     def eject_from_extruder(self) -> bool:
         """Preheat the heater if needed and unload the filament with ramming.
@@ -2151,6 +2689,7 @@ class MMU3:
         return self.home_idler()
 
     @auto_pause
+    @track_operation(OperationKind.HOME)
     @measure_duration
     @auto_disable_steppers
     def cmd_home_mmu(self, gcmd: GCodeCommand) -> bool:
@@ -2222,7 +2761,9 @@ class MMU3:
         return self.pause()
 
     def cmd_resume(self, gcmd: GCodeCommand) -> bool:
-        """Resume the MMU.
+        """Resume the MMU and the print.
+
+        ``FORCE=1`` clears any pending operation and resumes without retrying it.
 
         Args:
             gcmd: (GCodeCommand): The G-code command.
@@ -2234,9 +2775,26 @@ class MMU3:
             self.display_status_msg("MMU is not enabled!")
             return True
 
-        return self.resume()
+        return self.resume(force=bool(gcmd.get_int("FORCE", 0)))
 
     @auto_pause
+    @auto_disable_steppers
+    def cmd_mmu_retry(self, gcmd: GCodeCommand) -> bool:
+        """Retry the operation that failed and left the MMU paused.
+
+        Reads ``pending_operation`` so the operator does not have to remember
+        the original command (e.g. which ``Tx``).
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if the pending operation completed, False otherwise.
+        """
+        return self.retry_pending_operation()
+
+    @auto_pause
+    @track_operation(OperationKind.TOOL_CHANGE)
     @measure_duration
     @auto_disable_steppers
     def cmd_tx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
@@ -2257,7 +2815,11 @@ class MMU3:
             status_message = f"T{tool_id}"
         self.display_status_msg(status_message)
 
-        if self.current_filament == tool_id:
+        # sync the tracked position with the sensors before planning so the
+        # planner cannot skip steps because of stale state
+        self.assess_filament_pos()
+
+        if self.current_filament == tool_id and self.filament_pos == FilamentPos.LOADED:
             return True
 
         with (
@@ -2279,6 +2841,9 @@ class MMU3:
             for i in range(self.tool_change_retry):
                 if i > 0:
                     self.display_status_msg(f"Retry ({i + 1}): T{tool_id}...")
+                    # re-sync the tracked position with the sensors so the
+                    # planner resumes from where the filament actually is
+                    self.assess_filament_pos()
 
                 if i in range(1, self.tool_change_retry - 1):
                     # on last try we'll home the mmu
@@ -2297,42 +2862,12 @@ class MMU3:
                     continue
                 break
             else:
-                # so the load did not happen...
+                # all retries exhausted - auto_pause promotes the tracked
+                # operation to pending_operation and shows the recovery prompt
                 if previous_filament is not None:
-                    error_message = f"T{previous_filament} => T{tool_id} failed!"
+                    self.respond_debug(f"T{previous_filament} => T{tool_id} failed!")
                 else:
-                    error_message = f"T{tool_id} failed!"
-                self.respond_debug(error_message)
-
-                # display a prompt in Mainsail UI
-                prompt = Prompt(
-                    headline="MMU Error",
-                    widgets=[
-                        Text(text=error_message),
-                        # Add possible commands,
-                        ButtonGroup(
-                            buttons=[
-                                Button(label="Unlock MMU", gcode="UNLOCK_MMU"),
-                                Button(label="Unload Tool", gcode="UT"),
-                            ],
-                        ),
-                        ButtonGroup(
-                            buttons=[
-                                Button(label="Home MMU", gcode="HOME_MMU"),
-                                Button(
-                                    label=f"Retry T{tool_id}",
-                                    gcode="PROMPT_CLOSE_AND_RUN_COMMAND "
-                                    f"COMMAND=T{tool_id}",
-                                ),
-                            ],
-                        ),
-                        FooterButton(
-                            label="Resume",
-                            gcode="PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=RESUME",
-                        ),
-                    ],
-                )
-                self.gcode.run_script_from_command(prompt.to_gcode())
+                    self.respond_debug(f"T{tool_id} failed!")
                 return False
 
         if previous_filament is not None:
@@ -2342,6 +2877,7 @@ class MMU3:
         return True
 
     @auto_pause
+    @track_operation(OperationKind.CUT)
     @auto_disable_steppers
     def cmd_kx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
         """The generic Kx command.
@@ -2359,12 +2895,23 @@ class MMU3:
     def cmd_unlock(self, gcmd: GCodeCommand) -> bool:
         """Park the idler, stop the delayed stop of the heater.
 
+        Unlocking does not resolve whatever operation originally failed, so
+        re-show the recovery dialog if one is still pending. Its own button
+        ("Unlock MMU") does not close the dialog server-side, but this also
+        runs when UNLOCK_MMU is invoked outside of it (e.g. from the
+        console), so it doubles as a way to bring the dialog back for an
+        operator whose client lost it.
+
         Args:
             gcmd (GCodeCommand): The G-code command.
         """
-        return self.unlock()
+        result = self.unlock()
+        if self.pending_operation is not None:
+            self.show_recovery_prompt()
+        return result
 
     @auto_pause
+    @track_operation(OperationKind.LOAD)
     @measure_duration
     @auto_disable_steppers
     def cmd_load_tool(self, gcmd: GCodeCommand) -> bool:
@@ -2377,9 +2924,11 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         tool_id = gcmd.get_int("VALUE", None)
+        self.assess_filament_pos()
         return self.load_tool(tool_id)
 
     @auto_pause
+    @track_operation(OperationKind.UNLOAD)
     @measure_duration
     @auto_disable_steppers
     def cmd_unload_tool(self, gcmd: GCodeCommand) -> bool:
@@ -2407,6 +2956,7 @@ class MMU3:
                 self.toolhead,
             ),
         ):
+            self.assess_filament_pos()
             return self.unload_tool()
 
     @auto_pause
@@ -2504,6 +3054,7 @@ class MMU3:
         return self.unload_filament_from_hotend()
 
     @auto_pause
+    @track_operation(OperationKind.EJECT)
     @auto_disable_steppers
     def cmd_eject_ramming(self, gcmd: GCodeCommand) -> bool:
         """Eject the filament with ramming from the extruder nozzle to the MMU3.
@@ -2620,6 +3171,7 @@ class MMU3:
         return self.unload_filament_from_extruder()
 
     @auto_pause
+    @track_operation(OperationKind.UNLOAD)
     @auto_disable_steppers
     def cmd_m702(self, gcmd: GCodeCommand) -> bool:
         """Unload filament if inserted into the IR sensor.
@@ -2647,6 +3199,7 @@ class MMU3:
         return True
 
     @auto_pause
+    @track_operation(OperationKind.EJECT)
     @auto_disable_steppers
     def cmd_eject_from_extruder(self, gcmd: GCodeCommand) -> bool:
         """Preheat the heater if needed and unload the filament with ramming.
