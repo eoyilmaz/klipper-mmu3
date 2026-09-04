@@ -224,6 +224,13 @@ def auto_pause(f: Callable) -> Callable:
     If any of the decorated commands fail (return False), the MMU3 instance is
     paused automatically.
 
+    The recovery prompt is re-shown whenever a ``pending_operation`` is still
+    outstanding once the command returns - including on success. Mainsail
+    closes the prompt as soon as any of its buttons is clicked, so a
+    recovery-dialog action (``Unlock MMU``, ``Unload Tool``, ``Home MMU``)
+    that succeeds without actually resolving the original failure must not
+    strand the operator without a way back to ``Retry``/``Resume``.
+
     Args:
         f (Callable): The function to wrap.
 
@@ -246,19 +253,19 @@ def auto_pause(f: Callable) -> Callable:
             error_msg = str(e)
             result = False
 
-        if not result:
-            if not self.is_paused:
-                # remember what the operator was trying to do so recovery
-                # (MMU_RETRY / RESUME_MMU) does not depend on their memory
-                if self.current_operation is not None:
-                    self.current_operation.filament_pos_at_fail = self.filament_pos
-                    if error_msg:
-                        self.current_operation.error = error_msg
-                    self.pending_operation = self.current_operation
-                    self.current_operation = None
-                self.pause()
-            if self.pending_operation is not None:
-                self.show_recovery_prompt()
+        if not result and not self.is_paused:
+            # remember what the operator was trying to do so recovery
+            # (MMU_RETRY / RESUME_MMU) does not depend on their memory
+            if self.current_operation is not None:
+                self.current_operation.filament_pos_at_fail = self.filament_pos
+                if error_msg:
+                    self.current_operation.error = error_msg
+                self.pending_operation = self.current_operation
+                self.current_operation = None
+            self.pause()
+
+        if self.pending_operation is not None:
+            self.show_recovery_prompt()
         return result
 
     return wrapped_f
@@ -268,10 +275,19 @@ def track_operation(kind: OperationKind) -> Callable:
     """Decorator factory that records the high level operation in progress.
 
     Sets ``self.current_operation`` to a fresh :class:`Operation` on entry and
-    clears both ``current_operation`` and ``pending_operation`` when the wrapped
-    command succeeds. Must be stacked *inside* :func:`auto_pause` so that, on
-    failure, ``auto_pause`` still sees a populated ``current_operation`` to
-    promote.
+    clears ``current_operation`` when the wrapped command succeeds. Must be
+    stacked *inside* :func:`auto_pause` so that, on failure, ``auto_pause``
+    still sees a populated ``current_operation`` to promote.
+
+    ``pending_operation`` is only cleared here if this command's success
+    actually satisfies it (see :meth:`MMU3._pending_operation_resolved`).
+    Recovery-dialog buttons (``UNLOCK_MMU``, ``UT``, ``HOME_MMU``, ...) are
+    unrelated one-off commands from the operator's point of view - each is a
+    diagnostic/manual-recovery step, not necessarily a completion of whatever
+    originally failed, so a lone success here must not silently discard a
+    still-unfinished ``pending_operation``. Only :meth:`MMU3.retry_pending_operation`
+    (``MMU_RETRY`` / ``RESUME_MMU``) and a forced resume actually clear it
+    unconditionally.
 
     Args:
         kind (OperationKind): The kind of operation the wrapped command performs.
@@ -295,7 +311,8 @@ def track_operation(kind: OperationKind) -> Callable:
             result = f(self, gcmd, *args, **kwargs)
             if result:
                 self.current_operation = None
-                self.pending_operation = None
+                if self._pending_operation_resolved():
+                    self.pending_operation = None
             return result
 
         return wrapped_f
@@ -1469,6 +1486,30 @@ class MMU3:
             if target_pos <= reached_pos < self.filament_pos and not step_fn():
                 return False
         return self.filament_pos <= target_pos
+
+    def _pending_operation_resolved(self) -> bool:
+        """Whether the current filament state satisfies ``pending_operation``.
+
+        Used by :func:`track_operation` so that an unrelated command
+        succeeding - e.g. clicking "Unload Tool" or "Home MMU" in the
+        recovery dialog to manually work on a stuck filament - does not
+        silently discard a still-unfinished ``pending_operation``. Only
+        actually reaching the position (and, for loads, the tool) the
+        pending operation was trying to reach counts as resolving it.
+
+        Returns:
+            bool: True if there is no pending operation, or the current
+                filament state already satisfies it.
+        """
+        op = self.pending_operation
+        if op is None:
+            return True
+        if op.target_pos == FilamentPos.UNLOADED:
+            return self.filament_pos == FilamentPos.UNLOADED
+        return (
+            self.filament_pos >= op.target_pos
+            and self.current_filament == op.to_tool
+        )
 
     def retry_pending_operation(self) -> bool:
         """Re-drive ``self.pending_operation`` after checking the sensors.
@@ -2850,10 +2891,18 @@ class MMU3:
     def cmd_unlock(self, gcmd: GCodeCommand) -> bool:
         """Park the idler, stop the delayed stop of the heater.
 
+        Unlocking does not resolve whatever operation originally failed, so
+        re-show the recovery dialog if one is still pending - otherwise the
+        operator is left with no way back to "Retry"/"Resume" once Mainsail
+        closes this prompt.
+
         Args:
             gcmd (GCodeCommand): The G-code command.
         """
-        return self.unlock()
+        result = self.unlock()
+        if self.pending_operation is not None:
+            self.show_recovery_prompt()
+        return result
 
     @auto_pause
     @track_operation(OperationKind.LOAD)
