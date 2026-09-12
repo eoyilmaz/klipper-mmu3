@@ -3,7 +3,7 @@
 ; as when we raise the nozzle here, it accumulates
 ; too much filament on top of the wipe tower
 G1 X175 Y248 F15000
-G1 X212
+G1 X218
 G1 Z{max_layer_z + 3.0} F1200
 M400
 M106 P1 S255
@@ -18,7 +18,7 @@ G92 E0
 {endif}
 {if flush_length_1 > 1}
     M83
-    G0 X212 Y248 F15000 ; Be sure that we are at flush position
+    G0 X218 Y248 F15000 ; Be sure that we are at flush position
     M400
 ; FLUSH_START
     {if flush_length_1 > 23.7}
@@ -32,7 +32,7 @@ G92 E0
 {endif}
 {if flush_length_2 > 1}
     M83
-    G0 X212 Y248 F15000 ; Be sure that we are at flush position
+    G0 X218 Y248 F15000 ; Be sure that we are at flush position
 ; FLUSH_START
     G1 E{flush_length_2} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
 ; FLUSH_END
@@ -40,7 +40,7 @@ G92 E0
 {endif}
 {if flush_length_3 > 1}
     M83
-    G0 X212 Y248 F15000 ; Be sure that we are at flush position
+    G0 X218 Y248 F15000 ; Be sure that we are at flush position
 ; FLUSH_START
     G1 E{flush_length_3} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
 ; FLUSH_END
@@ -48,7 +48,7 @@ G92 E0
 {endif}
 {if flush_length_4 > 1}
     M83
-    G0 X212 Y248 F15000 ; Be sure that we are at flush position
+    G0 X218 Y248 F15000 ; Be sure that we are at flush position
 ; FLUSH_START
     G1 E{flush_length_4} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
 ; FLUSH_END
