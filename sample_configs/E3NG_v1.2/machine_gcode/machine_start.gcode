@@ -60,6 +60,6 @@ G92 E0
 
 ; Go to the filament change point
 G1 X212 Y248 F{travel_speed*0.5*60}
-G1 E2 F3000 ; un-retract filament
+;G1 E2 F3000 ; un-retract filament
 
 ; MZ FLOW TEMP START
