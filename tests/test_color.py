@@ -8,7 +8,7 @@ from enum import Enum
 import pytest
 
 # Local imports
-from mainsail_prompts import Color
+from extras.mmu3_mainsail_prompts import Color
 
 
 

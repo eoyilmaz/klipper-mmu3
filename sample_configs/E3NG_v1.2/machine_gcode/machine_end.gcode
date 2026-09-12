@@ -10,7 +10,7 @@ UT
 {if max_layer_z < max_print_height}
 G1 Z{z_offset+min(max_layer_z+2, max_print_height)} F600 ; Move print head up
 {endif}
-G1 X{print_bed_min[0] + 20} Y{print_bed_max[1] - 20} F{travel_speed * 0.5 * 60} ; present print
+G1 X218 Y248 F{travel_speed * 0.5 * 60} ; present print
 {if max_layer_z < max_print_height-10}G1 Z{z_offset+min(max_layer_z+5, max_print_height-10)} F600 ; Move print head further up{endif}
 
 SET_SKEW CLEAR=1

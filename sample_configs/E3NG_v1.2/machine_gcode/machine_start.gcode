@@ -17,12 +17,15 @@ M190 S{first_layer_bed_temperature[0]} ; wait for bed temp to stabilize
 G28 ; home all axis
 
 ; 2. Tram the bed
-Z_TILT_ADJUST; home and auto align z-axis
+Z_TILT_ADJUST ; home and auto align z-axis
 
-;WIPE_NOZZLE
-;G0 X117.5 Y117.5; move to the tap position
-
-G28 Z; home Z-axis only again
+; 3. Get a drift-free Z reference via a tap probe (uses the already-calibrated
+;    tap_threshold - does NOT re-run guess/refine/verify)
+WIPE_NOZZLE
+G0 Z10 F600                          ; lift clear of the bed before travelling
+G0 X117.5 Y117.5 F{travel_speed*60}  ; move to the tap position (bed center)
+PROBE METHOD=tap
+APPLY_TAP_Z_CORRECTION               ; corrects Klipper's Z frame from the tap result (macro in printer.cfg)
 
 ; probe adaptively
 BED_MESH_CALIBRATE METHOD=rapid_scan mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]} ADAPTIVE=0
@@ -60,6 +63,6 @@ G92 E0
 
 ; Go to the filament change point
 G1 X212 Y248 F{travel_speed*0.5*60}
-G1 E2 F3000 ; un-retract filament
+;G1 E2 F3000 ; un-retract filament
 
 ; MZ FLOW TEMP START
