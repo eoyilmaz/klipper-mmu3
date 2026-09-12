@@ -224,16 +224,16 @@ def auto_pause(f: Callable) -> Callable:
     If any of the decorated commands fail (return False), the MMU3 instance is
     paused automatically.
 
-    The recovery prompt is re-shown whenever a ``pending_operation`` is still
-    outstanding once the command returns - including on success. Of the
-    recovery dialog's buttons (see :meth:`MMU3.show_recovery_prompt`), only
-    "Retry" and "Resume" close it (via the ``PROMPT_CLOSE_AND_RUN_COMMAND``
-    macro sending ``action:prompt_end``); "Unlock MMU", "Unload Tool" and
-    "Home MMU" run their gcode with the dialog left open. Re-showing here
-    keeps the dialog in sync with any state that command changed (e.g. a
-    fresh failure re-promoting a different ``current_operation``) and
-    recovers the dialog for an operator whose client lost it (e.g. a page
-    reload) despite the server-side prompt never having been closed.
+    On failure, the recovery prompt is (re-)shown for the resulting
+    ``pending_operation``. Of the recovery dialog's buttons (see
+    :meth:`MMU3.show_recovery_prompt`), only "Retry" and "Resume" close it
+    (via the ``PROMPT_CLOSE_AND_RUN_COMMAND`` macro sending
+    ``action:prompt_end``); "Unlock MMU", "Unload Tool" and "Home MMU" run
+    their gcode with the dialog left open server-side, so a *successful* run
+    of one of those must not re-send the prompt - Mainsail visibly closes and
+    reopens an already-open dialog when it receives a fresh
+    ``action:prompt_begin``/``action:prompt_show``, which is just UI flicker
+    for a dialog that never went away.
 
     Args:
         f (Callable): The function to wrap.
@@ -257,19 +257,19 @@ def auto_pause(f: Callable) -> Callable:
             error_msg = str(e)
             result = False
 
-        if not result and not self.is_paused:
-            # remember what the operator was trying to do so recovery
-            # (MMU_RETRY / RESUME_MMU) does not depend on their memory
-            if self.current_operation is not None:
-                self.current_operation.filament_pos_at_fail = self.filament_pos
-                if error_msg:
-                    self.current_operation.error = error_msg
-                self.pending_operation = self.current_operation
-                self.current_operation = None
-            self.pause()
-
-        if self.pending_operation is not None:
-            self.show_recovery_prompt()
+        if not result:
+            if not self.is_paused:
+                # remember what the operator was trying to do so recovery
+                # (MMU_RETRY / RESUME_MMU) does not depend on their memory
+                if self.current_operation is not None:
+                    self.current_operation.filament_pos_at_fail = self.filament_pos
+                    if error_msg:
+                        self.current_operation.error = error_msg
+                    self.pending_operation = self.current_operation
+                    self.current_operation = None
+                self.pause()
+            if self.pending_operation is not None:
+                self.show_recovery_prompt()
         return result
 
     return wrapped_f
@@ -2896,19 +2896,14 @@ class MMU3:
         """Park the idler, stop the delayed stop of the heater.
 
         Unlocking does not resolve whatever operation originally failed, so
-        re-show the recovery dialog if one is still pending. Its own button
-        ("Unlock MMU") does not close the dialog server-side, but this also
-        runs when UNLOCK_MMU is invoked outside of it (e.g. from the
-        console), so it doubles as a way to bring the dialog back for an
-        operator whose client lost it.
+        ``pending_operation`` is left untouched. It is not re-shown here
+        though - "Unlock MMU" does not close the recovery dialog server-side
+        (see :func:`auto_pause`), so there is nothing to bring back.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
         """
-        result = self.unlock()
-        if self.pending_operation is not None:
-            self.show_recovery_prompt()
-        return result
+        return self.unlock()
 
     @auto_pause
     @track_operation(OperationKind.LOAD)
