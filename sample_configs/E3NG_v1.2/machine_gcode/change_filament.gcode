@@ -6,8 +6,8 @@ G1 X175 Y248 F15000
 G1 X218
 G1 Z{max_layer_z + 3.0} F1200
 M400
-M106 P1 S255
-M106 P2 S255
+M106 P1 S64 ;255
+M106 P2 S64 ;255
 {if old_filament_temp > 142 && next_extruder < 255}
     M104 S[old_filament_temp]
 {endif}
@@ -63,8 +63,8 @@ G92 E0
     WIPE_NOZZLE
 {endif}
 ; FLUSH_START
-M106 P1 S255
-M106 P2 S255
+M106 P1 S64 ;255
+M106 P2 S64 ;255
 ;M400
 ;M109 S[new_filament_temp]
 M104 S[new_filament_temp]
