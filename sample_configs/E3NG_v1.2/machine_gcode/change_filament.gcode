@@ -23,7 +23,14 @@ G92 E0
 ; FLUSH_START
     {if flush_length_1 > 23.7}
         G1 E23.7 F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60} ; do not need pulsatile flushing for start part
-        G1 E{(flush_length_1 - 23.7)} F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60}
+        G1 E{(flush_length_1 - 23.7) * 0.02} F50
+        G1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60}
+        G1 E{(flush_length_1 - 23.7) * 0.02} F50
+        G1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60}
+        G1 E{(flush_length_1 - 23.7) * 0.02} F50
+        G1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60}
+        G1 E{(flush_length_1 - 23.7) * 0.02} F50
+        G1 E{(flush_length_1 - 23.7) * 0.23} F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60}
     {else}
         G1 E{flush_length_1} F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60}
     {endif}
@@ -36,7 +43,16 @@ G92 E0
     M83
     G0 X218 Y248 F15000 ; Be sure that we are at flush position
 ; FLUSH_START
-    G1 E{flush_length_2} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_2 * 0.02} F50
+    G1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_2 * 0.02} F50
+    G1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_2 * 0.02} F50
+    G1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_2 * 0.02} F50
+    G1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_2 * 0.02} F50
 ; FLUSH_END
     G92 E0
     G1 E-2 F1800; retract before wiping
@@ -46,7 +62,16 @@ G92 E0
     M83
     G0 X218 Y248 F15000 ; Be sure that we are at flush position
 ; FLUSH_START
-    G1 E{flush_length_3} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_3 * 0.02} F50
+    G1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_3 * 0.02} F50
+    G1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_3 * 0.02} F50
+    G1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_3 * 0.02} F50
+    G1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_3 * 0.02} F50
 ; FLUSH_END
     G92 E0
     G1 E-2 F1800; retract before wiping
@@ -56,7 +81,16 @@ G92 E0
     M83
     G0 X218 Y248 F15000 ; Be sure that we are at flush position
 ; FLUSH_START
-    G1 E{flush_length_4} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_4 * 0.02} F50
+    G1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_4 * 0.02} F50
+    G1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_4 * 0.02} F50
+    G1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_4 * 0.02} F50
+    G1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
+    G1 E{flush_length_4 * 0.02} F50
 ; FLUSH_END
     G92 E0
     G1 E-2 F1800; retract before wiping
