@@ -36,12 +36,21 @@ SKEW_PROFILE LOAD=Califlower
 ; sometimes loading the material causes
 ; a lot of purge do this around the start of the bed
 G1 Z20 F240
-G1 X212 Y248 F{travel_speed*0.5*60}
+G1 X218 Y248 F{travel_speed*0.5*60}
 
 M109 S{first_layer_temperature[0]} ; wait for nozzle temp to stabilize
 
+PURGE_PLATFORM_EXTEND
+M106 P1 S255
+M106 P2 S255
 T[initial_tool]
+G92 E0
+G0 E10 F3000
+PURGE_PLATFORM_RETRACT
 WIPE_NOZZLE
+PURGE_PLATFORM_EXTEND
+M106 P1 S0
+M106 P2 S0
 
 ; prime the nozzle
 G1 Z20 F240

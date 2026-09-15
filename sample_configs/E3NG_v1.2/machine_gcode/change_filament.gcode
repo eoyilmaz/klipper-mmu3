@@ -6,8 +6,9 @@ G1 X175 Y248 F15000
 G1 X218
 G1 Z{max_layer_z + 3.0} F1200
 M400
-M106 P1 S64 ;255
-M106 P2 S64 ;255
+M106 P1 S255
+M106 P2 S255
+PURGE_PLATFORM_EXTEND ; be sure the platform is extended
 {if old_filament_temp > 142 && next_extruder < 255}
     M104 S[old_filament_temp]
 {endif}
@@ -20,6 +21,7 @@ G92 E0
     M83
     G0 X218 Y248 F15000 ; Be sure that we are at flush position
     M400
+    PURGE_PLATFORM_EXTEND
 ; FLUSH_START
     {if flush_length_1 > 23.7}
         G1 E23.7 F{flush_volumetric_speeds[previous_extruder]/2.405*0.7215*60} ; do not need pulsatile flushing for start part
@@ -37,11 +39,14 @@ G92 E0
 ; FLUSH_END
     G92 E0
     G1 E-2 F1800; retract before wiping
+    PURGE_PLATFORM_RETRACT
     WIPE_NOZZLE
+    PURGE_PLATFORM_EXTEND
 {endif}
 {if flush_length_2 > 1}
     M83
     G0 X218 Y248 F15000 ; Be sure that we are at flush position
+    PURGE_PLATFORM_EXTEND
 ; FLUSH_START
     G1 E{flush_length_2 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
     G1 E{flush_length_2 * 0.02} F50
@@ -56,11 +61,14 @@ G92 E0
 ; FLUSH_END
     G92 E0
     G1 E-2 F1800; retract before wiping
+    PURGE_PLATFORM_RETRACT
     WIPE_NOZZLE
+    PURGE_PLATFORM_EXTEND
 {endif}
 {if flush_length_3 > 1}
     M83
     G0 X218 Y248 F15000 ; Be sure that we are at flush position
+    PURGE_PLATFORM_EXTEND
 ; FLUSH_START
     G1 E{flush_length_3 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
     G1 E{flush_length_3 * 0.02} F50
@@ -75,11 +83,14 @@ G92 E0
 ; FLUSH_END
     G92 E0
     G1 E-2 F1800; retract before wiping
+    PURGE_PLATFORM_RETRACT
     WIPE_NOZZLE
+    PURGE_PLATFORM_EXTEND
 {endif}
 {if flush_length_4 > 1}
     M83
     G0 X218 Y248 F15000 ; Be sure that we are at flush position
+    PURGE_PLATFORM_EXTEND
 ; FLUSH_START
     G1 E{flush_length_4 * 0.18} F{flush_volumetric_speeds[next_extruder]/2.405*0.7215*60}
     G1 E{flush_length_4 * 0.02} F50
@@ -94,11 +105,14 @@ G92 E0
 ; FLUSH_END
     G92 E0
     G1 E-2 F1800; retract before wiping
+    PURGE_PLATFORM_RETRACT
     WIPE_NOZZLE
+    PURGE_PLATFORM_EXTEND
 {endif}
 ; FLUSH_START
-M106 P1 S64 ;255
-M106 P2 S64 ;255
+PURGE_PLATFORM_EXTEND
+M106 P1 S255
+M106 P2 S255
 ;M400
 ;M109 S[new_filament_temp]
 M104 S[new_filament_temp]
