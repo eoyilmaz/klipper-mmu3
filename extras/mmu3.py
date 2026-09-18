@@ -1802,15 +1802,23 @@ class MMU3:
         if not self.validate_extruder_is_hot_enough():
             return False
 
+        if self.current_tool is None and self.current_filament is not None:
+            # keep the pulley able to help: without this the idler stays
+            # parked and the pulley un-synced, so the extruder retracts
+            # alone against filament that may still be pinched at the
+            # selector.
+            self.select_tool(self.current_filament)
+
         self.respond_debug("Unloading Filament...")
-        self.gcode.run_script_from_command(f"""
-            G91
-            G92 E0
-            G1 E-{self.hotend_unload_length} F{self.hotend_unload_speed * 60}
-            G92 E0
-            G90
-        """)
-        self.toolhead.wait_moves()
+        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+            self.gcode.run_script_from_command(f"""
+                G91
+                G92 E0
+                G1 E-{self.hotend_unload_length} F{self.hotend_unload_speed * 60}
+                G92 E0
+                G90
+            """)
+            self.toolhead.wait_moves()
         return True
 
     def unload_filament_from_hotend(self) -> bool:
@@ -1830,24 +1838,27 @@ class MMU3:
             self.filament_pos = min(self.filament_pos, FilamentPos.AT_EXTRUDER)
             return True
 
-        if self.current_tool is not None:
-            self.respond_debug(f"Tool T{self.current_tool} selected!")
-            self.respond_debug(f"Auto unselecting T{self.current_tool}")
-            self.unselect_tool()
+        if self.current_tool is None and self.current_filament is not None:
+            # keep the pulley able to help: without this the idler stays
+            # parked and the pulley un-synced, so the extruder retracts
+            # alone against filament that may still be pinched at the
+            # selector.
+            self.select_tool(self.current_filament)
 
         if not self.validate_extruder_is_hot_enough():
             return False
 
         self.respond_debug("Unloading Filament...")
-        self.gcode.run_script_from_command(f"""
-            G91
-            G92 E0
-            G1 E-{self.hotend_unload_length} F{self.hotend_unload_speed * 60}
-            G90
-            G92 E0
-            ;G4 P1000
-        """)
-        self.toolhead.wait_moves()
+        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+            self.gcode.run_script_from_command(f"""
+                G91
+                G92 E0
+                G1 E-{self.hotend_unload_length} F{self.hotend_unload_speed * 60}
+                G90
+                G92 E0
+                ;G4 P1000
+            """)
+            self.toolhead.wait_moves()
 
         if (
             self.filament_switch_sensor_position
