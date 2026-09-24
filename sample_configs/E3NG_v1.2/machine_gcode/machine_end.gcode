@@ -1,11 +1,14 @@
 ; MZ FLOW TEMP END
 
-; Call WIPE_NOZZLE so we park the nozzle away from the build area
+; park the nozzle away from the build area
 ; to prevent any problems in UT to damage the printed parts.
-WIPE_NOZZLE
+G1 X218 Y248 F{travel_speed * 0.5 * 60}
 
 ; Unload filament
 UT
+
+; wipe again
+WIPE_NOZZLE
 
 {if max_layer_z < max_print_height}
 G1 Z{z_offset+min(max_layer_z+2, max_print_height)} F600 ; Move print head up
