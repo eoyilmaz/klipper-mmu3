@@ -22,6 +22,8 @@ following features:
 - Cut filament in MMU functionality (Only available for MMU3-5x)
 - Smoother load/unload experience
 - Filament motion sensor support for increased load/unload reliability
+- Operation statistics (toolchange counts, failure counts, per-tool
+  toolchange tallies) for both the printer's lifetime and the current job
 - Easier path to future implementations
 
 > [!CAUTION]
@@ -127,6 +129,18 @@ switch sensor is before the gears (between FINDA sensor and gears) set it to
 `pre_gears` and `post_gears` if the sensor is positioned after the gears
 (between the gears and the hotend).
 
+If you'd like MMU3's lifetime operation statistics (see `MMU_STATS` below)
+to survive a restart, also add a `[save_variables]` section to your
+`printer.cfg`, if you don't already have one for something else:
+
+   ```ini
+   [save_variables]
+   filename: ~/printer_data/config/mmu3_variables.cfg
+   ```
+
+This is optional - without it, MMU3 still works, it just keeps the lifetime
+counters in memory only.
+
 ## Usage
 
 It is very hard to explain all the functionalities here.
@@ -226,6 +240,29 @@ The extension supplies all the necessary gcode commands.
    - Adjust the `rotation_distance` value of the `pulley_stepper` in your
      `mmu3.cfg` file by `{current_value} * {measured_distance} / 100`.
 
+13. `MMU_STATS` / `MMU_STATS_RESET_JOB`
+
+   `MMU_STATS` prints a summary of the operation statistics tracked for
+   every top level MMU operation (tool changes, loads, unloads, homes, cuts
+   and ejects): how many times each was attempted, how many failed, and a
+   tally of successful tool changes by from/to tool. Two independent sets
+   are tracked and also exposed as `printer["mmu3 MMU3"].total_stats` /
+   `.job_stats`:
+
+   - `total_stats` - lifetime totals for the printer. These are persisted
+     via Klipper's `save_variables` (see [Post Installation](#post-installation-both-automatic-and-manual-installation))
+     and survive restarts. Without `[save_variables]` configured, they are
+     kept in memory only.
+   - `job_stats` - statistics for the current print job only. These reset
+     automatically whenever a new print starts (detected via `[print_stats]`)
+     or manually with `MMU_STATS_RESET_JOB`.
+
+   These are also available on your display, under `MMU` -> `Statistics`,
+   which shows the toolchange/load/unload/home counts (and failures) for
+   both the current job and the printer's lifetime, and offers `Reset Job
+   Stats` and `Print Full Report` (runs `MMU_STATS`, useful when the display
+   is too small to show everything, e.g. the per-tool toolchange tally).
+
 The following is the list of all the commands available, most of them are
 internally used and will be removed in the future as they are not supplying any
 user facing functionality, but are residues from the previous GCode Macro based
@@ -255,6 +292,8 @@ design.
    MMU_DISABLE
    MMU_ENABLE
    MMU_RETRY
+   MMU_STATS
+   MMU_STATS_RESET_JOB
    PAUSE_MMU
    PRE_LOAD_FILAMENT_TO_FINDA
    PULLEY_CALIBRATE

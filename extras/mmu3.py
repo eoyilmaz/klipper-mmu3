@@ -6,6 +6,7 @@ from __future__ import annotations
 import configparser
 import contextlib
 import enum
+import json
 import re
 import time
 from functools import partial, wraps
@@ -60,6 +61,9 @@ STEPPER_NAME_MAP = {
 }
 
 IS_DIGIT = re.compile(r"[0-9\-.]+")
+
+TOTAL_STATS_VARIABLE = "mmu3_total_stats"
+PRINT_STATS_POLL_INTERVAL = 10.0
 
 
 class FilamentPos(enum.IntEnum):
@@ -179,6 +183,93 @@ class Operation:
         if self.error:
             what = f"{what} ({self.error})"
         return what
+
+
+class OperationStats:
+    """Aggregate counters for :class:`Operation` runs.
+
+    Used for both the lifetime-of-the-printer totals (``MMU3.total_stats``,
+    persisted via ``save_variables``) and the current-job counters
+    (``MMU3.job_stats``, reset when a new print starts).
+    """
+
+    def __init__(self) -> None:
+        self.attempts: dict[OperationKind, int] = {}
+        self.failures: dict[OperationKind, int] = {}
+        self.toolchanges: dict[tuple[int, int], int] = {}
+
+    def record(self, operation: Operation, success: bool) -> None:
+        """Record the outcome of a finished operation.
+
+        Args:
+            operation (Operation): The operation that just finished.
+            success (bool): Whether it completed successfully.
+        """
+        self.attempts[operation.kind] = self.attempts.get(operation.kind, 0) + 1
+        if not success:
+            self.failures[operation.kind] = self.failures.get(operation.kind, 0) + 1
+            return
+        if (
+            operation.kind == OperationKind.TOOL_CHANGE
+            and operation.from_tool is not None
+            and operation.to_tool is not None
+        ):
+            key = (operation.from_tool, operation.to_tool)
+            self.toolchanges[key] = self.toolchanges.get(key, 0) + 1
+
+    def reset(self) -> None:
+        """Clear all counters."""
+        self.attempts.clear()
+        self.failures.clear()
+        self.toolchanges.clear()
+
+    def to_dict(self) -> dict:
+        """Return a JSON/``save_variables``-friendly snapshot.
+
+        Returns:
+            dict: The counters keyed by plain strings.
+        """
+        return {
+            "attempts": {k.value: v for k, v in self.attempts.items()},
+            "failures": {k.value: v for k, v in self.failures.items()},
+            "toolchanges": {
+                f"{from_tool}->{to_tool}": count
+                for (from_tool, to_tool), count in self.toolchanges.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> OperationStats:
+        """Rebuild counters from a snapshot produced by :meth:`to_dict`.
+
+        Anything malformed (unknown kind, unparsable toolchange key, wrong
+        types) is silently skipped so a corrupt or stale ``save_variables``
+        entry can never prevent startup.
+
+        Args:
+            data (dict): The snapshot, as previously returned by
+                :meth:`to_dict`.
+
+        Returns:
+            OperationStats: The rebuilt instance.
+        """
+        stats = cls()
+        kinds_by_value = {k.value: k for k in OperationKind}
+        for field_name, target in (
+            ("attempts", stats.attempts),
+            ("failures", stats.failures),
+        ):
+            for key, value in data.get(field_name, {}).items():
+                kind = kinds_by_value.get(key)
+                if kind is not None and isinstance(value, int):
+                    target[kind] = value
+        for key, value in data.get("toolchanges", {}).items():
+            if not isinstance(value, int):
+                continue
+            from_str, _, to_str = str(key).partition("->")
+            with contextlib.suppress(ValueError):
+                stats.toolchanges[(int(from_str), int(to_str))] = value
+        return stats
 
 
 def measure_duration(f: Callable) -> Callable:
@@ -307,16 +398,27 @@ def track_operation(kind: OperationKind) -> Callable:
             if to_tool is None and gcmd is not None:
                 with contextlib.suppress(Exception):
                     to_tool = gcmd.get_int("VALUE", None)
-            self.current_operation = Operation(
+            operation = Operation(
                 kind=kind,
                 from_tool=self.current_filament,
                 to_tool=to_tool,
             )
-            result = f(self, gcmd, *args, **kwargs)
-            if result:
-                self.current_operation = None
-                if self._pending_operation_resolved():
-                    self.pending_operation = None
+            self.current_operation = operation
+            result = False
+            try:
+                result = f(self, gcmd, *args, **kwargs)
+            finally:
+                # a raised command_error still reaches auto_pause's except
+                # clause below - record it as a failure here too, and never
+                # let a stats bug mask the real exception in flight.
+                with contextlib.suppress(Exception):
+                    self.total_stats.record(operation, success=bool(result))
+                    self.job_stats.record(operation, success=bool(result))
+                    self.save_total_stats()
+                if result:
+                    self.current_operation = None
+                    if self._pending_operation_resolved():
+                        self.pending_operation = None
             return result
 
         return wrapped_f
@@ -647,10 +749,12 @@ class MMU3:
         # how far the filament tip has moved from the MMU toward the nozzle
         self.filament_pos = FilamentPos.UNLOADED
 
-        # statistics variables
-        self.number_of_material_changes = 0
-        self.number_of_successful_material_changes = 0
-        self.number_of_fails = 0
+        # statistics
+        self.total_stats = OperationStats()
+        self.job_stats = OperationStats()
+        self.save_variables = None
+        self.print_stats = None
+        self._print_stats_state = "standby"
 
         # load config values
         # are we in debug mode
@@ -810,6 +914,51 @@ class MMU3:
             "display_status"
         )
 
+        self.save_variables = self.printer.lookup_object("save_variables", None)
+        if self.save_variables is not None:
+            self.total_stats = OperationStats.from_dict(
+                self.save_variables.allVariables.get(TOTAL_STATS_VARIABLE, {})
+            )
+        else:
+            self.respond_info(
+                "[save_variables] is not configured - MMU3 lifetime "
+                "statistics will not persist across restarts."
+            )
+
+        self.print_stats = self.printer.lookup_object("print_stats", None)
+        if self.print_stats is not None:
+            self.reactor.register_timer(
+                self._poll_print_stats,
+                self.reactor.NOW,
+            )
+
+    def _poll_print_stats(self, eventtime: float) -> float:
+        """Reset the current job's stats when a new print starts.
+
+        Args:
+            eventtime (float): The reactor event time.
+
+        Returns:
+            float: The next time this timer should fire.
+        """
+        state = self.print_stats.get_status(eventtime)["state"]
+        if state == "printing" and self._print_stats_state != "printing":
+            self.job_stats.reset()
+        self._print_stats_state = state
+        return eventtime + PRINT_STATS_POLL_INTERVAL
+
+    def save_total_stats(self) -> None:
+        """Persist ``total_stats`` via ``save_variables``, if configured."""
+        if self.save_variables is None:
+            return
+        # SAVE_VARIABLE's VALUE is re-parsed with ast.literal_eval(), which
+        # accepts JSON's double-quoted syntax (json.dumps() never emits a
+        # single quote, so it nests cleanly inside the single-quoted VALUE).
+        value = json.dumps(self.total_stats.to_dict())
+        self.gcode.run_script_from_command(
+            f"SAVE_VARIABLE VARIABLE={TOTAL_STATS_VARIABLE} VALUE='{value}'"
+        )
+
     def _handle_ready(self) -> None:
         """Handle klippy:ready - reconcile the tracked state with the sensors.
 
@@ -855,6 +1004,8 @@ class MMU3:
                 if self.pending_operation is not None
                 else None
             ),
+            "total_stats": self.total_stats.to_dict(),
+            "job_stats": self.job_stats.to_dict(),
         }
 
     def respond_info(self, msg: str) -> None:
@@ -907,6 +1058,10 @@ class MMU3:
         self.gcode.register_command("PAUSE_MMU", self.cmd_pause)
         self.gcode.register_command("RESUME_MMU", self.cmd_resume)
         self.gcode.register_command("MMU_RETRY", self.cmd_mmu_retry)
+        self.gcode.register_command("MMU_STATS", self.cmd_mmu_stats)
+        self.gcode.register_command(
+            "MMU_STATS_RESET_JOB", self.cmd_mmu_stats_reset_job
+        )
 
         for i in range(self.number_of_tools):
             self.gcode.register_command(f"T{i}", partial(self.cmd_tx, tool_id=i))
@@ -2684,6 +2839,44 @@ class MMU3:
             f"{self.selector_stepper_endstop.query_endstop(print_time)}"
         )
 
+        return True
+
+    def cmd_mmu_stats(self, gcmd: GCodeCommand) -> bool:
+        """Print a summary of the lifetime and current-job operation statistics.
+
+        Args:
+            gcmd (GcodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        for label, stats in (
+            ("Total (lifetime)", self.total_stats),
+            ("Current job", self.job_stats),
+        ):
+            self.respond_info(f"{label} statistics")
+            self.respond_info("=" * (len(label) + 11))
+            for kind in OperationKind:
+                attempts = stats.attempts.get(kind, 0)
+                failures = stats.failures.get(kind, 0)
+                self.respond_info(f"{kind.value}: {attempts} ({failures} failed)")
+            if stats.toolchanges:
+                self.respond_info("toolchanges:")
+                for (from_tool, to_tool), count in sorted(stats.toolchanges.items()):
+                    self.respond_info(f"  T{from_tool} -> T{to_tool}: {count}")
+
+        return True
+
+    def cmd_mmu_stats_reset_job(self, gcmd: GCodeCommand) -> bool:
+        """Reset the current-job operation statistics.
+
+        Args:
+            gcmd (GcodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        self.job_stats.reset()
         return True
 
     @auto_pause
