@@ -28,6 +28,15 @@ mmu3_mainsail_prompts_name=mmu3_mainsail_prompts.py
 ln -sf "$repo_path/extras/$mmu3_mainsail_prompts_name" $mmu3_mainsail_prompts_path
 echo "Linking $mmu3_mainsail_prompts_name to $mmu3_mainsail_prompts_path successfully complete!"
 
+# --------------------------------------------------------------
+# Linking the gate map and Mainsail / Fluidd MMU panel support modules
+mmu3_modules_path=~/klipper/klippy/extras/
+for mmu3_module_name in mmu3_gate_map.py mmu3_hh_compat.py; do
+    # always force symlink
+    ln -sf "$repo_path/extras/$mmu3_module_name" $mmu3_modules_path
+    echo "Linking $mmu3_module_name to $mmu3_modules_path successfully complete!"
+done
+
 # --------------------------------------------------------------
 # Update printer.cfg
 cfg_path=~/printer_data/config/
