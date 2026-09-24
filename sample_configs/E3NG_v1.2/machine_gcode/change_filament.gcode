@@ -47,7 +47,7 @@ G92 E0
     M106 P2 S255
     G92 E0
     PURGE_PLATFORM_RETRACT
-    G1 E-2 F1800; retract before wiping
+    G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
     PURGE_PLATFORM_EXTEND
@@ -79,7 +79,7 @@ G92 E0
     M106 P2 S255
     G92 E0
     PURGE_PLATFORM_RETRACT
-    G1 E-2 F1800; retract before wiping
+    G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
     PURGE_PLATFORM_EXTEND
@@ -111,7 +111,7 @@ G92 E0
     M106 P2 S255
     G92 E0
     PURGE_PLATFORM_RETRACT
-    G1 E-2 F1800; retract before wiping
+    G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
     PURGE_PLATFORM_EXTEND
@@ -143,7 +143,7 @@ G92 E0
     M106 P2 S255
     G92 E0
     PURGE_PLATFORM_RETRACT
-    G1 E-2 F1800; retract before wiping
+    G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
     PURGE_PLATFORM_EXTEND
@@ -159,7 +159,7 @@ M104 S[new_filament_temp]
 ; FLUSH_END
 M400
 G92 E0
-;G1 E-2 F1800
+;G1 E-1.5 F1800
 M400
 G1 Z{max_layer_z + 3.0} F3000
 ;{if layer_z <= (initial_layer_print_height + 0.001)}
