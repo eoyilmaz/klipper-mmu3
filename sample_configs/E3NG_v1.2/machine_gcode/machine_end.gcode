@@ -1,11 +1,11 @@
 ; MZ FLOW TEMP END
 
 ; park the nozzle away from the build area
-; to prevent any problems in UT to damage the printed parts.
+; to prevent any problems in MMU_UNLOAD to damage the printed parts.
 G1 X218 Y248 F{travel_speed * 0.5 * 60}
 
 ; Unload filament
-UT
+MMU_UNLOAD
 
 ; wipe again
 WIPE_NOZZLE

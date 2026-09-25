@@ -19,6 +19,8 @@ following features:
 - Sensorless homing for the selector and idler.
 - MMU specific menus
 - Mainsail prompts
+- Mainsail / Fluidd MMU panel support (gate colors, materials, live status)
+- Spoolman filament usage tracking per gate
 - Cut filament in MMU functionality (Only available for MMU3-5x)
 - Smoother load/unload experience
 - Filament motion sensor support for increased load/unload reliability
@@ -67,6 +69,8 @@ For manual installation follow these steps:
    ```shell
    ln -sf ./extras/mmu3.py ~/klipper/klippy/extras/
    ln -sf ./extras/mmu3_mainsail_prompts.py ~/klipper/klippy/extras/
+   ln -sf ./extras/mmu3_gate_map.py ~/klipper/klippy/extras/
+   ln -sf ./extras/mmu3_hh_compat.py ~/klipper/klippy/extras/
    ```
 
 3. Copy/link the config files:
@@ -165,7 +169,7 @@ The extension supplies all the necessary gcode commands.
    The tool change command, i.e. `T0`, `T1`, `T2`, `T3`, `T4`, `T5`, `T6`,
    `T7`, `T8`, `T9`, `T10`, `T11`.
 
-2. `HOME_MMU`
+2. `MMU_HOME`
 
    Homes the MMU idler and selector. Typically add this to your Machine start
    G-Code command as explained above.
@@ -179,12 +183,12 @@ The extension supplies all the necessary gcode commands.
    Homes the idler and selector, and tries to load the filament 0 to FINDA to
    verify everything is working fine and unloads it. Very rarely used...
 
-5. `SELECT_TOOL`
+5. `MMU_SELECT` / `MMU_UNSELECT`
 
-   Selects the requested slot:
+   Selects the requested gate (`GATE=` or `VALUE=`), or parks the idler:
 
    ```gcode
-   SELECT_TOOL VALUE=0
+   MMU_SELECT GATE=0
    ```
 
 6. `LOAD_FILAMENT_TO_FINDA` / `UNLOAD_FILAMENT_FROM_FINDA`
@@ -195,7 +199,7 @@ The extension supplies all the necessary gcode commands.
 
    Loads/Unloads the filament from extruder.
 
-8. `UNLOCK_MMU`
+8. `MMU_UNLOCK`
 
    Unlocks the MMU by moving the idler to the home position. Mostly needed when
    you need to pull/push the filament manually.
@@ -235,7 +239,7 @@ The extension supplies all the necessary gcode commands.
      ideally behind the MMU.
    - The MMU will pull exactly 100 mm of filament.
    - Mark the filament again.
-   - Unselect tool (`UT`).
+   - Unload the tool (`MMU_UNLOAD`).
    - Pull the filament out and measure the distance between the marks.
    - Adjust the `rotation_distance` value of the `pulley_stepper` in your
      `mmu3.cfg` file by `{current_value} * {measured_distance} / 100`.
@@ -263,6 +267,49 @@ The extension supplies all the necessary gcode commands.
    Stats` and `Print Full Report` (runs `MMU_STATS`, useful when the display
    is too small to show everything, e.g. the per-tool toolchange tally).
 
+14. `MMU_LOAD` / `MMU_UNLOAD` / `MMU_EJECT`
+
+   `MMU_LOAD` loads the filament of a gate to the nozzle (`MMU_LOAD GATE=2`,
+   without `GATE=` the selected gate is loaded). `MMU_UNLOAD` unloads the
+   filament from the nozzle back to the MMU. `MMU_EJECT` does the same and also
+   parks the idler, so the filament can be pulled out by hand (same as
+   `M702`).
+
+15. `MMU_MOTORS_OFF`
+
+   Turns off the MMU stepper motors.
+
+16. `MMU_GATE_MAP`
+
+   Shows or edits what is loaded in each gate. This is normally done from the
+   Mainsail / Fluidd MMU panel (see
+   [Mainsail / Fluidd MMU Panel & Spoolman](#mainsail--fluidd-mmu-panel--spoolman)),
+   but works from the console too:
+
+   ```gcode
+   MMU_GATE_MAP                  ; print the gate map
+   MMU_GATE_MAP GATE=0 NAME="Galaxy Black" MATERIAL=PLA COLOR=1A1A1A TEMP=215
+   MMU_GATE_MAP GATE=0 SPOOLID=12 ; assign Spoolman spool 12 to gate 0
+   MMU_GATE_MAP GATE=0 SPOOLID=-1 ; unassign the spool
+   MMU_GATE_MAP GATE=0 AVAILABLE=0 ; mark the gate as empty (1: available)
+   MMU_GATE_MAP RESET=1          ; clear all gates
+   ```
+
+> [!NOTE]
+>
+> The following commands were renamed to match Happy Hare's naming, which the
+> Mainsail / Fluidd MMU panels use. The old names still work but print a
+> deprecation warning, please update your slicer G-code and macros:
+>
+> | Old             | New            |
+> |-----------------|----------------|
+> | `HOME_MMU`      | `MMU_HOME`     |
+> | `UNLOCK_MMU`    | `MMU_UNLOCK`   |
+> | `LT`            | `MMU_LOAD`     |
+> | `UT`            | `MMU_UNLOAD`   |
+> | `SELECT_TOOL`   | `MMU_SELECT`   |
+> | `UNSELECT_TOOL` | `MMU_UNSELECT` |
+
 The following is the list of all the commands available, most of them are
 internally used and will be removed in the future as they are not supplying any
 user facing functionality, but are residues from the previous GCode Macro based
@@ -275,7 +322,6 @@ design.
    ENDSTOPS_STATUS
    GET_MMU_PARAM
    HOME_IDLER
-   HOME_MMU
    HOME_MMU_ONLY
    K0  ; Not supported with MMU3-12x
    K1  ; Not supported with MMU3-12x
@@ -287,20 +333,30 @@ design.
    LOAD_FILAMENT_TO_FINDA
    LOAD_FILAMENT_TO_FINDA_IN_LOOP
    LOAD_FILAMENT_TO_HOTEND
-   LT
    M702
+   MMU_CHANGE_TOOL  ; only with enable_mmu_panel
    MMU_DISABLE
+   MMU_EJECT
    MMU_ENABLE
+   MMU_GATE_MAP     ; only with enable_mmu_panel
+   MMU_HOME
+   MMU_LOAD
+   MMU_MOTORS_OFF
+   MMU_PRELOAD      ; only with enable_mmu_panel
+   MMU_RECOVER      ; only with enable_mmu_panel
    MMU_RETRY
+   MMU_SELECT
    MMU_STATS
    MMU_STATS_RESET_JOB
+   MMU_UNLOAD
+   MMU_UNLOCK
+   MMU_UNSELECT
    PAUSE_MMU
    PRE_LOAD_FILAMENT_TO_FINDA
    PULLEY_CALIBRATE
    RESUME_MMU
    RETRY_LOAD_FILAMENT_TO_HOTEND
    RETRY_UNLOAD_FILAMENT_FROM_HOTEND
-   SELECT_TOOL
    SET_MMU_PARAM
    T0
    T1
@@ -319,7 +375,70 @@ design.
    UNLOAD_FILAMENT_FROM_FINDA
    UNLOAD_FILAMENT_FROM_HOTEND
    UNLOAD_FILAMENT_FROM_HOTEND_WITH_RAMMING
-   UNLOCK_MMU
-   UNSELECT_TOOL
-   UT
    ```
+
+## Mainsail / Fluidd MMU Panel & Spoolman
+
+Mainsail (v2.15 and later) and Fluidd (v1.34 and later) ship an MMU panel built
+for [Happy Hare](https://github.com/moggieuk/Happy-Hare). The MMU3 extension
+reports its state in the same format, so the panel works without any changes to
+Mainsail or Fluidd. On the Mainsail dashboard, add the "MMU" panel from the
+interface settings if it doesn't show up by itself.
+
+<img src="./docs/images/Mainsail_MMU_Panel_1.png" width="400" alt="Mainsail MMU panel with an MMU3 12x">
+
+The panel shows:
+
+- every gate with the color, material and name of its filament,
+- the selected gate and the loaded tool,
+- where the filament is (at FINDA, at the extruder, loaded) and what the MMU is
+  doing right now (Selecting, Loading, Unloading, Homing, Cutting Filament,
+  ...),
+- the reason when the MMU paused itself.
+
+It also has buttons to select, load, unload, eject, preload (check) a gate,
+home, unlock and recover the MMU. Clicking a gate's filament opens the gate
+editor, where you can set the filament name, material, color and temperature,
+or pick a Spoolman spool.
+
+This is enabled by default and can be turned off in `[mmu3 MMU3]`:
+
+```ini
+[mmu3 MMU3]
+enable_mmu_panel: True
+spoolman_support: readonly  # off, readonly
+```
+
+Add a `[save_variables]` section to your `printer.cfg` (see
+[Post Installation](#post-installation-both-automatic-and-manual-installation)),
+so the gate map survives restarts.
+
+### Spoolman
+
+To track filament usage per spool with [Spoolman](https://github.com/Donkie/Spoolman):
+
+1. Add a `[spoolman]` section to your `moonraker.conf`:
+
+   ```ini
+   [spoolman]
+   server: http://<spoolman-host>:7912
+   ```
+
+2. In the MMU panel, open a gate and pick its spool from Spoolman. The gate
+   takes the spool's filament name, material, color and temperature.
+
+Every time a gate is loaded, the MMU3 sets its spool as Moonraker's active
+spool, and when the filament is unloaded the active spool is cleared. Moonraker
+then records the extruded filament against the right spool.
+
+A spool can only be assigned to one gate, assigning it to another gate removes
+it from the previous one. The gate to spool mapping is stored in Klipper
+(`save_variables`), it isn't written back to Spoolman.
+
+### Not supported
+
+The MMU3 always loads gate `n` for tool `n`. The following Happy Hare features
+aren't available, and their buttons only print a "not supported" message:
+tool-to-gate remapping, endless spool, bypass, gate checking
+(`MMU_CHECK_GATE`), gear motor sync, and loading or unloading the extruder
+only.
