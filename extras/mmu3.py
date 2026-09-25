@@ -7,6 +7,7 @@ import configparser
 import contextlib
 import enum
 import json
+import logging
 import re
 import time
 from functools import partial, wraps
@@ -16,6 +17,32 @@ from typing import TYPE_CHECKING, Callable
 from extras.manual_stepper import ManualStepper
 
 # Local Imports
+from extras.mmu3_gate_map import (
+    GATE_AVAILABLE,
+    GATE_EMPTY,
+    GATE_UNKNOWN,
+    NO_SPOOL,
+    GateMap,
+)
+from extras.mmu3_hh_compat import (
+    ACTION_CHECKING,
+    ACTION_CUTTING_FILAMENT,
+    ACTION_CUTTING_TIP,
+    ACTION_FORMING_TIP,
+    ACTION_HEATING,
+    ACTION_HOMING,
+    ACTION_IDLE,
+    ACTION_LOADING,
+    ACTION_LOADING_EXTRUDER,
+    ACTION_SELECTING,
+    ACTION_UNLOADING,
+    ACTION_UNLOADING_EXTRUDER,
+    SPOOLMAN_OFF,
+    SPOOLMAN_READONLY,
+    SPOOLMAN_SUPPORT_VALUES,
+    MmuMachine,
+    MmuStatus,
+)
 from extras.mmu3_mainsail_prompts import (
     Button,
     ButtonGroup,
@@ -32,6 +59,7 @@ if TYPE_CHECKING:
     else:
         from typing_extensions import Self
 
+    from collections.abc import Iterator
     from types import TracebackType
 
     from configfile import ConfigWrapper
@@ -63,6 +91,9 @@ STEPPER_NAME_MAP = {
 IS_DIGIT = re.compile(r"[0-9\-.]+")
 
 TOTAL_STATS_VARIABLE = "mmu3_total_stats"
+GATE_MAP_VARIABLE = "mmu3_gate_map"
+
+logger = logging.getLogger(__name__)
 PRINT_STATS_POLL_INTERVAL = 10.0
 
 
@@ -272,6 +303,23 @@ class OperationStats:
         return stats
 
 
+def get_gate_param(gcmd: None | GCodeCommand) -> None | int:
+    """Return the gate given with ``GATE=`` (Happy Hare style) or ``VALUE=``.
+
+    Args:
+        gcmd (None | GCodeCommand): The G-code command.
+
+    Returns:
+        None | int: The gate, None if neither parameter is given.
+    """
+    if gcmd is None:
+        return None
+    gate = gcmd.get_int("GATE", None)
+    if gate is None:
+        gate = gcmd.get_int("VALUE", None)
+    return gate
+
+
 def measure_duration(f: Callable) -> Callable:
     """Report command duration.
 
@@ -290,18 +338,18 @@ def measure_duration(f: Callable) -> Callable:
         # condition the function name
         f_name = {
             "cmd_tx": "T",
-            "cmd_load_tool": "LT",
-            "cmd_unload_tool": "UT",
-            "cmd_select_tool": "SELECT_TOOL",
-            "cmd_unselect_tool": "UNSELECT_TOOL",
+            "cmd_load_tool": "MMU_LOAD",
+            "cmd_unload_tool": "MMU_UNLOAD",
+            "cmd_select_tool": "MMU_SELECT",
+            "cmd_unselect_tool": "MMU_UNSELECT",
             "cmd_calibrate_pulley_rotation_distance": "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE",
-            "cmd_home_mmu": "HOME_MMU",
+            "cmd_home_mmu": "MMU_HOME",
         }.get(f.__name__, f.__name__)
         if f_name in ["T"]:
             # replace with the proper command
             f_name = f"{f_name}{kwargs['tool_id']}"
-        elif f_name in ["LT", "SELECT_TOOL"]:
-            tool_id = gcmd.get_int("VALUE", None)
+        elif f_name in ["MMU_LOAD", "MMU_SELECT"]:
+            tool_id = kwargs.get("tool_id", get_gate_param(gcmd))
             f_name = f"{f_name} {tool_id}"
         self.display_status_msg(f"{f_name} took {duration:0.1f} seconds")
         return result
@@ -376,7 +424,7 @@ def track_operation(kind: OperationKind) -> Callable:
 
     ``pending_operation`` is only cleared here if this command's success
     actually satisfies it (see :meth:`MMU3._pending_operation_resolved`).
-    Recovery-dialog buttons (``UNLOCK_MMU``, ``UT``, ``HOME_MMU``, ...) are
+    Recovery-dialog buttons (``MMU_UNLOCK``, ``MMU_UNLOAD``, ``MMU_HOME``, ...) are
     unrelated one-off commands from the operator's point of view - each is a
     diagnostic/manual-recovery step, not necessarily a completion of whatever
     originally failed, so a lone success here must not silently discard a
@@ -397,7 +445,11 @@ def track_operation(kind: OperationKind) -> Callable:
             to_tool = kwargs.get("tool_id")
             if to_tool is None and gcmd is not None:
                 with contextlib.suppress(Exception):
-                    to_tool = gcmd.get_int("VALUE", None)
+                    to_tool = get_gate_param(gcmd)
+            if to_tool is None and kind == OperationKind.LOAD:
+                # MMU_LOAD without a gate loads the selected one
+                with contextlib.suppress(Exception):
+                    to_tool = self.default_gate()
             operation = Operation(
                 kind=kind,
                 from_tool=self.current_filament,
@@ -419,7 +471,33 @@ def track_operation(kind: OperationKind) -> Callable:
                     self.current_operation = None
                     if self._pending_operation_resolved():
                         self.pending_operation = None
+                # point Spoolman at the spool now in the extruder, if any
+                with contextlib.suppress(Exception):
+                    self.sync_active_spool()
             return result
+
+        return wrapped_f
+
+    return decorator
+
+
+def reports_action(action: str) -> Callable:
+    """Decorator factory that reports ``action`` while the method runs.
+
+    See :meth:`MMU3.running_action`.
+
+    Args:
+        action (str): One of the Happy Hare ``ACTION_*`` strings.
+
+    Returns:
+        Callable: The actual decorator.
+    """
+
+    def decorator(f: Callable) -> Callable:
+        @wraps(f)
+        def wrapped_f(self: MMU3, *args, **kwargs) -> bool:
+            with self.running_action(action):
+                return f(self, *args, **kwargs)
 
         return wrapped_f
 
@@ -748,6 +826,9 @@ class MMU3:
         self.current_filament = None
         # how far the filament tip has moved from the MMU toward the nozzle
         self.filament_pos = FilamentPos.UNLOADED
+        # what the MMU is doing right now, in Happy Hare's vocabulary
+        # (reported to the Mainsail / Fluidd MMU panel)
+        self.action = ACTION_IDLE
 
         # statistics
         self.total_stats = OperationStats()
@@ -764,6 +845,19 @@ class MMU3:
             "tool_mapping",
             list(range(self.number_of_tools)),
         )
+
+        # per gate filament metadata, persisted via save_variables
+        self.gate_map = GateMap(self.number_of_tools)
+        # Mainsail / Fluidd MMU panel and Spoolman
+        self.enable_mmu_panel = config.getboolean("enable_mmu_panel", True)
+        self.spoolman_support = config.getchoice(
+            "spoolman_support",
+            list(SPOOLMAN_SUPPORT_VALUES),
+            SPOOLMAN_READONLY,
+        )
+        # the spool last sent to Moonraker, NO_SPOOL forces the first sync
+        self._active_spool_id: None | int = NO_SPOOL
+        self._spoolman_error_reported = False
 
         # timeouts
         self.timeout_pause = config.getint("timeout_pause", 36000)
@@ -877,6 +971,8 @@ class MMU3:
 
         # register commands
         self.register_commands()
+        if self.enable_mmu_panel:
+            self.register_mmu_panel()
         self.printer.register_event_handler("klippy:connect", self._connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -919,10 +1015,14 @@ class MMU3:
             self.total_stats = OperationStats.from_dict(
                 self.save_variables.allVariables.get(TOTAL_STATS_VARIABLE, {})
             )
+            self.gate_map = GateMap.from_dict(
+                self.number_of_tools,
+                self.save_variables.allVariables.get(GATE_MAP_VARIABLE, {}),
+            )
         else:
             self.respond_info(
                 "[save_variables] is not configured - MMU3 lifetime "
-                "statistics will not persist across restarts."
+                "statistics and the gate map will not persist across restarts."
             )
 
         self.print_stats = self.printer.lookup_object("print_stats", None)
@@ -946,6 +1046,95 @@ class MMU3:
             self.job_stats.reset()
         self._print_stats_state = state
         return eventtime + PRINT_STATS_POLL_INTERVAL
+
+    def save_gate_map(self) -> None:
+        """Persist ``gate_map`` via ``save_variables``, if configured."""
+        if self.save_variables is None:
+            return
+        # see save_total_stats(), gate names are sanitized from single quotes
+        # in MMU_GATE_MAP so the JSON nests inside the single-quoted VALUE
+        value = json.dumps(self.gate_map.to_dict())
+        self.gcode.run_script_from_command(
+            f"SAVE_VARIABLE VARIABLE={GATE_MAP_VARIABLE} VALUE='{value}'"
+        )
+
+    def set_gate_status(self, gate: None | int, status: int) -> None:
+        """Record an observed gate availability, saving it if it changed.
+
+        Args:
+            gate (None | int): The gate, ignored if None or invalid.
+            status (int): GATE_UNKNOWN, GATE_EMPTY or GATE_AVAILABLE.
+        """
+        if not self.gate_map.is_valid_gate(gate):
+            return
+        if self.gate_map.update(gate, status=status):
+            with contextlib.suppress(Exception):
+                self.save_gate_map()
+
+    def sync_active_spool(self, quiet: bool = False) -> None:
+        """Point Moonraker's active Spoolman spool at the loaded gate's spool.
+
+        Moonraker attributes the extruded filament to the active spool, so
+        switching it on every load / unload tracks the usage per spool. The
+        spool is only considered active once the filament reached the
+        extruder, it is cleared (``None``) otherwise. Moonraker is only called
+        when the wanted spool changes.
+
+        Args:
+            quiet (bool): Do not report a missing Moonraker ``[spoolman]``
+                section to the console (used on startup, when Moonraker may
+                not be connected yet).
+        """
+        if self.spoolman_support == SPOOLMAN_OFF:
+            return
+        spool_id = None
+        gate = self.current_filament
+        if self.filament_pos >= FilamentPos.AT_EXTRUDER and self.gate_map.is_valid_gate(
+            gate
+        ):
+            gate_spool_id = self.gate_map[gate].spool_id
+            if gate_spool_id != NO_SPOOL:
+                spool_id = gate_spool_id
+        if spool_id == self._active_spool_id:
+            return
+
+        webhooks = self.printer.lookup_object("webhooks")
+        try:
+            webhooks.call_remote_method("spoolman_set_active_spool", spool_id=spool_id)
+        except self.printer.command_error as e:
+            # Moonraker is not connected or has no [spoolman] section, keep
+            # _active_spool_id as is so the next sync retries
+            self.respond_debug(f"Setting the active spool failed: {e}")
+            if not quiet and not self._spoolman_error_reported:
+                self._spoolman_error_reported = True
+                self.respond_info(
+                    "Could not set the active Spoolman spool, is [spoolman] "
+                    "configured in moonraker.conf? (Set `spoolman_support: off` "
+                    "to silence this.)"
+                )
+            return
+        self._active_spool_id = spool_id
+        self.respond_debug(f"Active spool: {spool_id}")
+
+    @contextlib.contextmanager
+    def running_action(self, action: str) -> Iterator[None]:
+        """Report ``action`` as what the MMU is doing for the duration.
+
+        The previous action is restored on exit, so nested actions (e.g.
+        "Selecting" inside "Loading") report the innermost one.
+
+        Args:
+            action (str): One of the Happy Hare ``ACTION_*`` strings.
+
+        Yields:
+            None: Nothing.
+        """
+        previous = getattr(self, "action", ACTION_IDLE)
+        self.action = action
+        try:
+            yield
+        finally:
+            self.action = previous
 
     def save_total_stats(self) -> None:
         """Persist ``total_stats`` via ``save_variables``, if configured."""
@@ -982,6 +1171,8 @@ class MMU3:
         """
         with contextlib.suppress(Exception):
             self.assess_filament_pos()
+        with contextlib.suppress(Exception):
+            self.sync_active_spool(quiet=True)
 
     def get_status(self, event_time: float) -> dict:
         """Return the status of the MMU3 for Klipper's template engine.
@@ -999,6 +1190,7 @@ class MMU3:
             "current_tool": self.current_tool,
             "current_filament": self.current_filament,
             "filament_pos": self.filament_pos.name,
+            "action": self.action,
             "pending_operation": (
                 self.pending_operation.describe()
                 if self.pending_operation is not None
@@ -1006,6 +1198,7 @@ class MMU3:
             ),
             "total_stats": self.total_stats.to_dict(),
             "job_stats": self.job_stats.to_dict(),
+            "gate_map": self.gate_map.to_dict(),
         }
 
     def respond_info(self, msg: str) -> None:
@@ -1053,7 +1246,7 @@ class MMU3:
         )
         self.gcode.register_command("ENDSTOPS_STATUS", self.cmd_endstops_status)
         self.gcode.register_command("HOME_IDLER", self.cmd_home_idler)
-        self.gcode.register_command("HOME_MMU", self.cmd_home_mmu)
+        self.gcode.register_command("MMU_HOME", self.cmd_home_mmu)
         self.gcode.register_command("HOME_MMU_ONLY", self.cmd_home_mmu_only)
         self.gcode.register_command("PAUSE_MMU", self.cmd_pause)
         self.gcode.register_command("RESUME_MMU", self.cmd_resume)
@@ -1067,11 +1260,13 @@ class MMU3:
             self.gcode.register_command(f"T{i}", partial(self.cmd_tx, tool_id=i))
             self.gcode.register_command(f"K{i}", partial(self.cmd_kx, tool_id=i))
 
-        self.gcode.register_command("UNLOCK_MMU", self.cmd_unlock)
-        self.gcode.register_command("LT", self.cmd_load_tool)
-        self.gcode.register_command("UT", self.cmd_unload_tool)
-        self.gcode.register_command("SELECT_TOOL", self.cmd_select_tool)
-        self.gcode.register_command("UNSELECT_TOOL", self.cmd_unselect_tool)
+        self.gcode.register_command("MMU_UNLOCK", self.cmd_unlock)
+        self.gcode.register_command("MMU_LOAD", self.cmd_mmu_load)
+        self.gcode.register_command("MMU_UNLOAD", self.cmd_mmu_unload)
+        self.gcode.register_command("MMU_EJECT", self.cmd_mmu_eject)
+        self.gcode.register_command("MMU_SELECT", self.cmd_mmu_select)
+        self.gcode.register_command("MMU_UNSELECT", self.cmd_unselect_tool)
+        self.gcode.register_command("MMU_MOTORS_OFF", self.cmd_motors_off)
         self.gcode.register_command(
             "RETRY_LOAD_FILAMENT_TO_HOTEND", self.cmd_retry_load_filament_to_hotend
         )
@@ -1113,6 +1308,61 @@ class MMU3:
         self.gcode.register_command("M702", self.cmd_m702)
         self.gcode.register_command("EJECT_FROM_EXTRUDER", self.cmd_eject_from_extruder)
         self.gcode.register_command("EJECT_BEFORE_HOME", self.cmd_eject_before_home)
+
+        # the pre Happy Hare naming, kept working for existing slicer G-code
+        # and macros
+        for old_name, new_name, handler in (
+            ("HOME_MMU", "MMU_HOME", self.cmd_home_mmu),
+            ("UNLOCK_MMU", "MMU_UNLOCK", self.cmd_unlock),
+            ("LT", "MMU_LOAD", self.cmd_mmu_load),
+            ("UT", "MMU_UNLOAD", self.cmd_mmu_unload),
+            ("SELECT_TOOL", "MMU_SELECT", self.cmd_mmu_select),
+            ("UNSELECT_TOOL", "MMU_UNSELECT", self.cmd_unselect_tool),
+        ):
+            self.gcode.register_command(
+                old_name,
+                partial(
+                    self.cmd_deprecated_alias,
+                    old_name=old_name,
+                    new_name=new_name,
+                    handler=handler,
+                ),
+            )
+
+    def register_mmu_panel(self) -> None:
+        """Expose the MMU3 to the Mainsail / Fluidd MMU panel.
+
+        The panels look for Happy Hare's ``mmu`` / ``mmu_machine`` objects and
+        send Happy Hare commands, register compatible ones.
+        """
+        if self.printer.lookup_object("mmu", None) is not None:
+            logger.warning(
+                "mmu3: an 'mmu' object already exists (Happy Hare?), "
+                "not registering the MMU3 panel support."
+            )
+            self.enable_mmu_panel = False
+            return
+        self.printer.add_object("mmu", MmuStatus(self))
+        self.printer.add_object("mmu_machine", MmuMachine(self))
+
+        self.gcode.register_command("MMU_GATE_MAP", self.cmd_mmu_gate_map)
+        self.gcode.register_command("MMU_CHANGE_TOOL", self.cmd_mmu_change_tool)
+        self.gcode.register_command("MMU_PRELOAD", self.cmd_mmu_preload)
+        self.gcode.register_command("MMU_RECOVER", self.cmd_mmu_recover)
+        for name in (
+            "MMU_TTG_MAP",
+            "MMU_REMAP_TTG",
+            "MMU_ENDLESS_SPOOL",
+            "MMU_SLICER_TOOL_MAP",
+            "MMU_SPOOLMAN",
+            "MMU_CHECK_GATE",
+            "MMU_CHECK_GATES",
+            "MMU_SYNC_GEAR_MOTOR",
+            "MMU_MOTORS_ON",
+        ):
+            self.gcode.register_command(
+                name, partial(self.cmd_not_supported, name=name)
+            )
 
     def get_mapped_tool_id(self, tool_id: int) -> int:
         """Return the mapped tool id.
@@ -1269,6 +1519,7 @@ class MMU3:
             return False
         return True
 
+    @reports_action(ACTION_HOMING)
     def home_idler(self) -> bool:
         """Home the idler.
 
@@ -1325,6 +1576,7 @@ class MMU3:
 
         return True
 
+    @reports_action(ACTION_HOMING)
     def home_mmu(self) -> bool:
         """Home the MMU.
 
@@ -1450,7 +1702,7 @@ class MMU3:
 
         PAUSE MACROS
         PAUSE_MMU is called when an human intervention is needed
-        use UNLOCK_MMU to park the idler and start the manual intervention
+        use MMU_UNLOCK to park the idler and start the manual intervention
         and use RESUME when the invention is ended to resume the current print
 
         Returns:
@@ -1580,19 +1832,35 @@ class MMU3:
         return self.filament_pos
 
     def _load_path(self) -> list:
-        """Ordered forward transitions as ``(reached_pos, step_fn)`` pairs."""
+        """Ordered forward transitions as ``(reached_pos, step_fn, action)``."""
         return [
-            (FilamentPos.AT_FINDA, self.load_filament_to_finda),
-            (FilamentPos.AT_EXTRUDER, self.load_filament_from_finda_to_extruder),
-            (FilamentPos.LOADED, self.load_filament_to_hotend),
+            (FilamentPos.AT_FINDA, self.load_filament_to_finda, ACTION_LOADING),
+            (
+                FilamentPos.AT_EXTRUDER,
+                self.load_filament_from_finda_to_extruder,
+                ACTION_LOADING,
+            ),
+            (
+                FilamentPos.LOADED,
+                self.load_filament_to_hotend,
+                ACTION_LOADING_EXTRUDER,
+            ),
         ]
 
     def _unload_path(self) -> list:
-        """Ordered reverse transitions as ``(reached_pos, step_fn)`` pairs."""
+        """Ordered reverse transitions as ``(reached_pos, step_fn, action)``."""
         return [
-            (FilamentPos.AT_EXTRUDER, self.unload_filament_from_hotend),
-            (FilamentPos.AT_FINDA, self.unload_filament_from_extruder_to_finda),
-            (FilamentPos.UNLOADED, self.unload_filament_from_finda),
+            (
+                FilamentPos.AT_EXTRUDER,
+                self.unload_filament_from_hotend,
+                ACTION_UNLOADING_EXTRUDER,
+            ),
+            (
+                FilamentPos.AT_FINDA,
+                self.unload_filament_from_extruder_to_finda,
+                ACTION_UNLOADING,
+            ),
+            (FilamentPos.UNLOADED, self.unload_filament_from_finda, ACTION_UNLOADING),
         ]
 
     def move_filament_to(
@@ -1634,16 +1902,20 @@ class MMU3:
             and not self.select_tool(tool_id)
         ):
             return False
-        for reached_pos, step_fn in self._load_path():
-            if self.filament_pos < reached_pos <= target_pos and not step_fn():
-                return False
+        for reached_pos, step_fn, action in self._load_path():
+            if self.filament_pos < reached_pos <= target_pos:
+                with self.running_action(action):
+                    if not step_fn():
+                        return False
         return self.filament_pos >= target_pos
 
     def _unload_toward(self, target_pos: FilamentPos) -> bool:
         """Run the reverse sub-steps needed to reach ``target_pos``."""
-        for reached_pos, step_fn in self._unload_path():
-            if target_pos <= reached_pos < self.filament_pos and not step_fn():
-                return False
+        for reached_pos, step_fn, action in self._unload_path():
+            if target_pos <= reached_pos < self.filament_pos:
+                with self.running_action(action):
+                    if not step_fn():
+                        return False
         return self.filament_pos <= target_pos
 
     def _pending_operation_resolved(self) -> bool:
@@ -1726,13 +1998,13 @@ class MMU3:
                 Text(text=message),
                 ButtonGroup(
                     buttons=[
-                        Button(label="Unlock MMU", gcode="UNLOCK_MMU"),
-                        Button(label="Unload Tool", gcode="UT"),
+                        Button(label="Unlock MMU", gcode="MMU_UNLOCK"),
+                        Button(label="Unload Tool", gcode="MMU_UNLOAD"),
                     ],
                 ),
                 ButtonGroup(
                     buttons=[
-                        Button(label="Home MMU", gcode="HOME_MMU"),
+                        Button(label="Home MMU", gcode="MMU_HOME"),
                         Button(
                             label="Retry",
                             gcode="PROMPT_CLOSE_AND_RUN_COMMAND COMMAND=MMU_RETRY",
@@ -1760,6 +2032,7 @@ class MMU3:
         self.is_paused = False
         return self.home_idler()
 
+    @reports_action(ACTION_SELECTING)
     def select_tool(self, tool_id: int) -> bool:
         """Select a tool. move the idler and then move the selector (if needed).
 
@@ -2047,7 +2320,7 @@ class MMU3:
         if self.current_filament is None:
             return False
 
-        self.respond_debug(f"UT {self.current_filament} ...")
+        self.respond_debug(f"MMU_UNLOAD {self.current_filament} ...")
         if not self.unload_filament_from_hotend_with_ramming():
             return False
         self.select_tool(self.current_filament)
@@ -2073,10 +2346,12 @@ class MMU3:
         self.respond_debug("Ramming and Unloading Filament...")
 
         if self.enable_filament_cutter:
-            self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
-            self.toolhead.wait_moves()
+            with self.running_action(ACTION_CUTTING_TIP):
+                self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
+                self.toolhead.wait_moves()
         else:
-            self.ramming_slicer()
+            with self.running_action(ACTION_FORMING_TIP):
+                self.ramming_slicer()
 
         if not self.unload_filament_from_hotend():
             return False
@@ -2228,6 +2503,7 @@ class MMU3:
         )
         return True
 
+    @reports_action(ACTION_CHECKING)
     def pre_load_filament_to_finda(self, filament_id: int) -> bool:
         """Pre load the selected filament to FINDA.
 
@@ -2283,9 +2559,12 @@ class MMU3:
         self.respond_debug("Loading filament to FINDA ...")
         if not self.load_filament_to_finda_in_loop():
             self.pulley_stepper.do_set_position(0)
+            # nothing reached FINDA, the gate has run out of filament
+            self.set_gate_status(self.current_tool, GATE_EMPTY)
             return False
 
         self.pulley_stepper.do_set_position(0)
+        self.set_gate_status(self.current_tool, GATE_AVAILABLE)
 
         # if not self.is_filament_in_finda():
         #     return False
@@ -2593,6 +2872,7 @@ class MMU3:
         self.respond_debug("Unloading done from extruder to MMU")
         return True
 
+    @reports_action(ACTION_CUTTING_FILAMENT)
     def cut_filament_in_mmu(self, tool_id: int) -> bool:
         """Cut the filament in the MMU3.
 
@@ -2715,7 +2995,7 @@ class MMU3:
         if not self.validate_extruder_is_hot_enough():
             return False
 
-        self.respond_debug(f"LT {tool_id}")
+        self.respond_debug(f"MMU_LOAD {tool_id}")
         if self.filament_pos < FilamentPos.AT_EXTRUDER and not self.select_tool(
             tool_id
         ):
@@ -2758,10 +3038,11 @@ class MMU3:
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
             self.respond_debug(f"Cut T{self.current_filament}")
             # cut the filament in extruder
-            self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
-            self.toolhead.wait_moves()
+            with self.running_action(ACTION_CUTTING_TIP):
+                self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
+                self.toolhead.wait_moves()
 
-        self.respond_debug(f"UT {self.current_filament}")
+        self.respond_debug(f"MMU_UNLOAD {self.current_filament}")
         # planner runs only the steps still needed to reach UNLOADED
         return self.move_filament_to(FilamentPos.UNLOADED, self.current_filament)
 
@@ -2784,7 +3065,8 @@ class MMU3:
         self.respond_debug("Filament in hotend, trying to eject it ...")
         self.respond_debug("Preheat Nozzle")
         min_temp = max(self.get_extruder_temperature(), self.extruder_eject_temp)
-        self.gcode.run_script_from_command(f"M109 S{min_temp}")
+        with self.running_action(ACTION_HEATING):
+            self.gcode.run_script_from_command(f"M109 S{min_temp}")
         return self.unload_filament_from_hotend_with_ramming()
 
     def eject_before_home(self) -> None:
@@ -3122,7 +3404,9 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        tool_id = gcmd.get_int("VALUE", None)
+        tool_id = get_gate_param(gcmd)
+        if tool_id is None:
+            tool_id = self.default_gate()
         self.assess_filament_pos()
         return self.load_tool(tool_id)
 
@@ -3170,7 +3454,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        tool_id = gcmd.get_int("VALUE", None)
+        tool_id = get_gate_param(gcmd)
         return self.select_tool(tool_id)
 
     @auto_pause
@@ -3186,6 +3470,334 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         return self.unselect_tool()
+
+    def default_gate(self) -> None | int:
+        """Return the gate a command without ``GATE=`` acts on.
+
+        Returns:
+            None | int: The selected gate, else the gate whose filament is in
+                the path, else None.
+        """
+        if self.current_tool is not None:
+            return self.current_tool
+        return self.current_filament
+
+    def cmd_deprecated_alias(
+        self,
+        gcmd: GCodeCommand,
+        old_name: str = "",
+        new_name: str = "",
+        handler: None | Callable = None,
+    ) -> bool:
+        """Run a renamed command under its old name, with a warning.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            old_name (str): The deprecated command name.
+            new_name (str): The command name to use instead.
+            handler (None | Callable): The handler of the new command.
+
+        Returns:
+            bool: The result of the handler.
+        """
+        self.respond_info(f"{old_name} is deprecated, use {new_name} instead.")
+        return handler(gcmd)
+
+    def cmd_not_supported(self, gcmd: GCodeCommand, name: str = "") -> bool:
+        """Answer a Happy Hare command that has no MMU3 equivalent.
+
+        Registered so the Mainsail / Fluidd MMU panel buttons do not error.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            name (str): The command name.
+
+        Returns:
+            bool: Always True.
+        """
+        self.respond_info(f"{name} is not supported on MMU3.")
+        return True
+
+    def cmd_motors_off(self, gcmd: GCodeCommand) -> bool:
+        """Turn off the MMU3 stepper motors.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if the steppers are disabled.
+        """
+        return self.disable_steppers()
+
+    def cmd_mmu_load(self, gcmd: GCodeCommand) -> bool:
+        """Load the filament of a gate (``GATE=`` / ``VALUE=``) to the nozzle.
+
+        Without a gate the selected gate is loaded.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        if gcmd.get_int("EXTRUDER_ONLY", 0):
+            self.respond_info("MMU_LOAD EXTRUDER_ONLY=1 is not supported on MMU3.")
+            return False
+        if get_gate_param(gcmd) is None and self.default_gate() is None:
+            self.respond_info("No gate selected, use MMU_LOAD GATE=<gate>.")
+            return False
+        return self.cmd_load_tool(gcmd)
+
+    def cmd_mmu_unload(self, gcmd: GCodeCommand) -> bool:
+        """Unload the filament from the nozzle to the MMU3.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        if gcmd.get_int("EXTRUDER_ONLY", 0):
+            self.respond_info("MMU_UNLOAD EXTRUDER_ONLY=1 is not supported on MMU3.")
+            return False
+        return self.cmd_unload_tool(gcmd)
+
+    def cmd_mmu_eject(self, gcmd: GCodeCommand) -> bool:
+        """Unload the filament back into its gate and park the idler.
+
+        ``GATE=`` is accepted for Happy Hare compatibility. Only the loaded
+        gate can be ejected.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        gate = get_gate_param(gcmd)
+        if gate is not None and gate != self.current_filament:
+            self.respond_info(f"Gate {gate} is not loaded, nothing to eject.")
+            return True
+        return self.cmd_m702(gcmd)
+
+    def cmd_mmu_select(self, gcmd: GCodeCommand) -> bool:
+        """Select a gate (``GATE=`` / ``VALUE=``).
+
+        Refuses to move the selector away from a gate whose filament is
+        still in the path, as that would drag the selector across it.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        if gcmd.get_int("BYPASS", 0):
+            self.respond_info("MMU_SELECT BYPASS=1 is not supported on MMU3.")
+            return False
+        gate = get_gate_param(gcmd)
+        if (
+            self.filament_pos != FilamentPos.UNLOADED
+            and self.current_filament is not None
+            and gate != self.current_filament
+        ):
+            self.respond_info(
+                f"T{self.current_filament} is loaded, unload it before "
+                f"selecting another gate."
+            )
+            return False
+        return self.cmd_select_tool(gcmd)
+
+    def cmd_mmu_change_tool(self, gcmd: GCodeCommand) -> bool:
+        """Change to a tool (``TOOL=``) or gate (``GATE=``), same as ``Tn``.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        gate = gcmd.get_int("GATE", None)
+        if gate is None:
+            gate = gcmd.get_int("TOOL", None)
+        if not self.gate_map.is_valid_gate(gate):
+            self.respond_info(f"MMU_CHANGE_TOOL needs a valid TOOL= or GATE= ({gate})")
+            return False
+        return self.cmd_tx(gcmd, tool_id=gate)
+
+    def cmd_mmu_preload(self, gcmd: GCodeCommand) -> bool:
+        """Check a gate by feeding its filament to FINDA and back.
+
+        Without ``GATE=`` the selected gate is preloaded.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        gate = get_gate_param(gcmd)
+        if gate is None:
+            gate = self.current_tool
+        if not self.gate_map.is_valid_gate(gate):
+            self.respond_info("No gate selected, use MMU_PRELOAD GATE=<gate>.")
+            return False
+        if self.filament_pos != FilamentPos.UNLOADED:
+            self.respond_info(
+                f"T{self.current_filament} is loaded, unload it before preloading."
+            )
+            return False
+        return self.cmd_preload_filament_to_finda(gcmd, filament_id=gate)
+
+    def cmd_mmu_recover(self, gcmd: GCodeCommand) -> bool:
+        """Recover the MMU state.
+
+        Without arguments, retries the pending operation (``MMU_RETRY``) or,
+        if there is none, re-reads the filament position from the sensors.
+
+        ``GATE=`` / ``TOOL=`` and ``LOADED=0|1`` tell the MMU3 where the
+        filament actually is (e.g. after fixing it by hand); the sensors still
+        have the final say.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        gate = gcmd.get_int("GATE", None, minval=-1)
+        if gate is None:
+            gate = gcmd.get_int("TOOL", None, minval=-1)
+        loaded = gcmd.get_int("LOADED", None, minval=0, maxval=1)
+
+        if gate is None and loaded is None:
+            if self.pending_operation is not None:
+                return self.cmd_mmu_retry(gcmd)
+        else:
+            if gate is not None:
+                if gate != -1 and not self.gate_map.is_valid_gate(gate):
+                    raise gcmd.error(f"Invalid gate: {gate}")
+                self.current_filament = gate if gate >= 0 else None
+            if loaded == 1:
+                if self.current_filament is None:
+                    raise gcmd.error("LOADED=1 needs a GATE=")
+                self.filament_pos = FilamentPos.LOADED
+            elif loaded == 0:
+                self.filament_pos = FilamentPos.UNLOADED
+                self.current_filament = None
+
+        self.assess_filament_pos()
+        self.sync_active_spool()
+        self.respond_info(
+            f"Filament position: {self.filament_pos}, filament: "
+            f"T{self.current_filament}, selected: T{self.current_tool}"
+        )
+        return True
+
+    def cmd_mmu_gate_map(self, gcmd: GCodeCommand) -> bool:
+        """Show or edit the filament metadata of the gates.
+
+        ``GATE=<gate>`` with any of ``NAME=``, ``MATERIAL=``, ``COLOR=``,
+        ``TEMP=``, ``SPOOLID=``, ``AVAILABLE=`` and ``SPEED=`` edits a gate,
+        ``RESET=1`` clears all gates and no arguments prints the map.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        if gcmd.get_int("RESET", 0):
+            self.gate_map.reset()
+            self.save_gate_map()
+            self.sync_active_spool()
+            self.respond_info("Gate map reset.")
+            return True
+
+        gate = gcmd.get_int("GATE", None)
+        if gate is None:
+            if gcmd.get("MAP", None) is not None:
+                self.respond_info("MMU_GATE_MAP MAP= is not supported on MMU3.")
+                return True
+            self.print_gate_map()
+            return True
+        if not self.gate_map.is_valid_gate(gate):
+            raise gcmd.error(f"Invalid gate: {gate}")
+
+        fields = self.parse_gate_map_fields(gcmd)
+        spool_id = fields.get("spool_id", NO_SPOOL)
+        changed = False
+        if spool_id != NO_SPOOL:
+            # a spool can only be in one gate
+            for other in self.gate_map.gates_with_spool(spool_id):
+                if other != gate:
+                    changed |= self.gate_map.update(other, spool_id=NO_SPOOL)
+        changed |= self.gate_map.update(gate, **fields)
+
+        if changed:
+            self.save_gate_map()
+            self.sync_active_spool()
+        if not gcmd.get_int("QUIET", 0):
+            self.print_gate_map()
+        return True
+
+    @staticmethod
+    def parse_gate_map_fields(gcmd: GCodeCommand) -> dict:
+        """Return the gate fields given to ``MMU_GATE_MAP``.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            dict: :class:`GateInfo` field name -> value, only the given ones.
+        """
+        fields = {}
+        for param, field in (("NAME", "name"), ("MATERIAL", "material")):
+            value = gcmd.get(param, None)
+            if value is not None:
+                # quotes would break the single-quoted SAVE_VARIABLE value
+                fields[field] = value.replace("'", "").replace('"', "").strip()
+        color = gcmd.get("COLOR", None)
+        if color is not None:
+            fields["color"] = color
+        for param, field, minval, maxval in (
+            ("TEMP", "temperature", -1, None),
+            ("SPOOLID", "spool_id", -1, None),
+            ("AVAILABLE", "status", GATE_UNKNOWN, GATE_AVAILABLE + 1),
+            ("SPEED", "speed_override", 10, 150),
+        ):
+            value = gcmd.get_int(param, None, minval=minval, maxval=maxval)
+            if value is not None:
+                fields[field] = value
+        if fields.get("status", GATE_UNKNOWN) > GATE_AVAILABLE:
+            # "available from buffer" - the MMU3 has no buffer
+            fields["status"] = GATE_AVAILABLE
+        return fields
+
+    def print_gate_map(self) -> None:
+        """Print the gate map to the console."""
+        status_text = {
+            GATE_UNKNOWN: "unknown",
+            GATE_EMPTY: "empty",
+            GATE_AVAILABLE: "available",
+        }
+        lines = ["Gate map:"]
+        for gate, info in enumerate(self.gate_map.gates):
+            parts = [f"Gate {gate}:"]
+            parts.append(info.material or "-")
+            if info.name:
+                parts.append(info.name)
+            if info.color:
+                parts.append(f"color={info.color}")
+            if info.temperature >= 0:
+                parts.append(f"{info.temperature}C")
+            if info.spool_id != NO_SPOOL:
+                parts.append(f"spool={info.spool_id}")
+            parts.append(f"[{status_text.get(info.status, info.status)}]")
+            if gate == self.current_filament:
+                parts.append("<- loaded")
+            lines.append(" ".join(str(p) for p in parts))
+        self.respond_info("\n".join(lines))
 
     @auto_pause
     @auto_disable_steppers
@@ -3466,16 +4078,21 @@ class MMU3:
 
     @auto_pause
     @auto_disable_steppers
-    def cmd_preload_filament_to_finda(self, gcmd: GCodeCommand) -> bool:
+    def cmd_preload_filament_to_finda(
+        self, gcmd: GCodeCommand, filament_id: None | int = None
+    ) -> bool:
         """Preload filament to finda.
 
         Args:
             gcmd (GCodeCommand): The G-Code command.
+            filament_id (None | int): The filament to preload, read from
+                ``VALUE=`` if None, -1 preloads all.
 
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        filament_id: int = gcmd.get_int("VALUE", -1)
+        if filament_id is None:
+            filament_id = gcmd.get_int("VALUE", -1)
         return self.pre_load_filament_to_finda(filament_id)
 
     def cmd_mmu_enable(self, gcmd: GCodeCommand) -> bool:
