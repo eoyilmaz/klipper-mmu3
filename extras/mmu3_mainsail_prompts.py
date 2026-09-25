@@ -1,3 +1,5 @@
+"""Helpers that render Mainsail prompt dialogs as ``RESPOND`` G-code."""
+
 # Standard Library Imports
 from __future__ import annotations
 
@@ -5,6 +7,8 @@ from enum import Enum
 
 
 class Color(Enum):
+    """The Mainsail prompt button colors."""
+
     Primary = "primary"
     Secondary = "secondary"
     Info = "info"
@@ -33,23 +37,20 @@ class Color(Enum):
         Returns:
             Color: The enum.
         """
+        valid_values = [c.name.title() for c in cls] + [c.value for c in cls]
         if not isinstance(color, (str, Color)):
             raise TypeError(
-                "color should be a Color enum value or one of {}, not {}: '{}'".format(
-                    [c.name.title() for c in cls] + [c.value for c in cls],
-                    color.__class__.__name__,
-                    color,
-                )
+                f"color should be a Color enum value or one of {valid_values}, "
+                f"not {color.__class__.__name__}: '{color}'"
             )
         if isinstance(color, str):
-            color_name_lut = dict([(c.name.lower(), c.name) for c in cls])
-            color_name_lut.update(dict([(c.value.lower(), c.name) for c in cls]))
+            color_name_lut = {c.name.lower(): c.name for c in cls}
+            color_name_lut.update({c.value.lower(): c.name for c in cls})
             color_lower_case = color.lower()
             if color_lower_case not in color_name_lut:
                 raise ValueError(
-                    "color should be a Color enum value or one of {}, not '{}'".format(
-                        [c.name.title() for c in cls] + [c.value for c in cls], color
-                    )
+                    f"color should be a Color enum value or one of {valid_values}, "
+                    f"not '{color}'"
                 )
 
             return cls.__members__[color_name_lut[color_lower_case]]
@@ -76,6 +77,11 @@ class Text(MainsailPromptBase):
         self.text = text
 
     def to_gcode(self) -> str:
+        """Return the GCode representation.
+
+        Returns:
+            str: The string representation of the text.
+        """
         return f'RESPOND TYPE=command MSG="action:prompt_text {self.text}"'
 
 
@@ -102,7 +108,10 @@ class Button(MainsailPromptBase):
         Returns:
             str: The string representation of the button.
         """
-        return f'RESPOND TYPE=command MSG="action:prompt_button {self.label}|{self.gcode}|{self.color}"'
+        return (
+            'RESPOND TYPE=command MSG="action:prompt_button '
+            f'{self.label}|{self.gcode}|{self.color}"'
+        )
 
 
 class FooterButton(Button):
@@ -134,15 +143,19 @@ class ButtonGroup(MainsailPromptBase):
     def __init__(self, buttons: None | list[Button] = None) -> None:
         self.buttons = buttons if buttons else []
 
-    def to_gcode(self):
-        gcode_buffer = [f'RESPOND TYPE=command MSG="action:prompt_button_group_start"']
-        # process buttons
-        for button in self.buttons:
-            gcode_buffer.append(button.to_gcode())
-        gcode_buffer.append(
-            f'RESPOND TYPE=command MSG="action:prompt_button_group_end"'
+    def to_gcode(self) -> str:
+        """Return the GCode representation.
+
+        Returns:
+            str: The string representation of the button group.
+        """
+        return "\n".join(
+            [
+                'RESPOND TYPE=command MSG="action:prompt_button_group_start"',
+                *(button.to_gcode() for button in self.buttons),
+                'RESPOND TYPE=command MSG="action:prompt_button_group_end"',
+            ]
         )
-        return "\n".join(gcode_buffer)
 
 
 class Prompt(MainsailPromptBase):
@@ -155,7 +168,7 @@ class Prompt(MainsailPromptBase):
         self,
         headline: str = "",
         widgets: None | list[Text | Button | ButtonGroup] = None,
-    ):
+    ) -> None:
         self.headline = headline
         self.widgets = widgets if widgets else []
 
@@ -165,10 +178,10 @@ class Prompt(MainsailPromptBase):
         Returns:
             str: The GCode string that corresponds to this Prompt instance.
         """
-        gcode_buffer = [
-            f'RESPOND TYPE=command MSG="action:prompt_begin {self.headline}"'
-        ]
-        for widget in self.widgets:
-            gcode_buffer.append(widget.to_gcode())
-        gcode_buffer.append('RESPOND TYPE=command MSG="action:prompt_show"')
-        return "\n".join(gcode_buffer)
+        return "\n".join(
+            [
+                f'RESPOND TYPE=command MSG="action:prompt_begin {self.headline}"',
+                *(widget.to_gcode() for widget in self.widgets),
+                'RESPOND TYPE=command MSG="action:prompt_show"',
+            ]
+        )

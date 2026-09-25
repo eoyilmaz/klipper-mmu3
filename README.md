@@ -335,6 +335,8 @@ design.
    LOAD_FILAMENT_TO_HOTEND
    M702
    MMU_CHANGE_TOOL  ; only with enable_mmu_panel
+   MMU_CHECK_GATE   ; only with enable_mmu_panel
+   MMU_CHECK_GATES  ; only with enable_mmu_panel
    MMU_DISABLE
    MMU_EJECT
    MMU_ENABLE
@@ -396,10 +398,17 @@ The panel shows:
   ...),
 - the reason when the MMU paused itself.
 
-It also has buttons to select, load, unload, eject, preload (check) a gate,
-home, unlock and recover the MMU. Clicking a gate's filament opens the gate
+It also has buttons to select, load, unload, eject, preload a gate, check one
+or all gates for filament, home, unlock and recover the MMU. Clicking a gate's filament opens the gate
 editor, where you can set the filament name, material, color and temperature,
 or pick a Spoolman spool.
+
+`MMU_CHECK_GATE` checks the selected gate and `MMU_CHECK_GATES` checks all
+gates. Each gate's filament is fed to FINDA and back, and the gate is marked
+available or empty. An empty gate doesn't pause the MMU, the check moves on to
+the next gate. Both commands accept Happy Hare's `GATE=`, `GATES=0,2,3`,
+`TOOL=`, `TOOLS=`, `ALL=1` and `QUIET=1`, and are refused while filament is
+loaded.
 
 This is enabled by default and can be turned off in `[mmu3 MMU3]`:
 
@@ -439,6 +448,5 @@ it from the previous one. The gate to spool mapping is stored in Klipper
 
 The MMU3 always loads gate `n` for tool `n`. The following Happy Hare features
 aren't available, and their buttons only print a "not supported" message:
-tool-to-gate remapping, endless spool, bypass, gate checking
-(`MMU_CHECK_GATE`), gear motor sync, and loading or unloading the extruder
-only.
+tool-to-gate remapping, endless spool, bypass, gear motor sync, and loading
+or unloading the extruder only.

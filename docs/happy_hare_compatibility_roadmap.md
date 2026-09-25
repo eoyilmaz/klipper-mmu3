@@ -47,7 +47,7 @@ is where the tool / gate split becomes necessary.
 
 Small, low-risk items that make the panel and existing commands more complete.
 
-- [ ] **Implement `MMU_CHECK_GATE`.** ([#48](https://github.com/eoyilmaz/klipper-mmu3/issues/48))
+- [x] **Implement `MMU_CHECK_GATE`.** ([#48](https://github.com/eoyilmaz/klipper-mmu3/issues/48))
   Currently replies "not supported", but the MMU3 can do it: feed each gate to FINDA and back like
   `PRE_LOAD_FILAMENT_TO_FINDA`, and record the result with `set_gate_status()`. Support `GATE=`,
   `GATES=0,2,3`, `TOOL=` and `ALL=1`. Must refuse while filament is loaded (same check as
