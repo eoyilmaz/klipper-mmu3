@@ -385,6 +385,8 @@ reports its state in the same format, so the panel works without any changes to
 Mainsail or Fluidd. On the Mainsail dashboard, add the "MMU" panel from the
 interface settings if it doesn't show up by itself.
 
+<img src="./docs/images/Mainsail_MMU_Panel_1.png" width="400" alt="Mainsail MMU panel with an MMU3 12x">
+
 The panel shows:
 
 - every gate with the color, material and name of its filament,
