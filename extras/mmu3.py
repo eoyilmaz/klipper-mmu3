@@ -93,6 +93,12 @@ IS_DIGIT = re.compile(r"[0-9\-.]+")
 TOTAL_STATS_VARIABLE = "mmu3_total_stats"
 GATE_MAP_VARIABLE = "mmu3_gate_map"
 
+GATE_STATUS_TEXT = {
+    GATE_UNKNOWN: "unknown",
+    GATE_EMPTY: "empty",
+    GATE_AVAILABLE: "available",
+}
+
 logger = logging.getLogger(__name__)
 PRINT_STATS_POLL_INTERVAL = 10.0
 
@@ -320,6 +326,28 @@ def get_gate_param(gcmd: None | GCodeCommand) -> None | int:
     return gate
 
 
+def get_gate_list_param(gcmd: GCodeCommand, name: str) -> None | list[int]:
+    """Return a comma separated list of gates, e.g. ``GATES=0,2,3``.
+
+    Args:
+        gcmd (GCodeCommand): The G-code command.
+        name (str): The parameter name.
+
+    Raises:
+        gcmd.error: If an item is not an integer.
+
+    Returns:
+        None | list[int]: The gates, None if the parameter is not given.
+    """
+    value = gcmd.get(name, None)
+    if value is None:
+        return None
+    try:
+        return [int(g) for g in value.split(",") if g.strip()]
+    except ValueError:
+        raise gcmd.error(f"Invalid {name}: {value}") from None
+
+
 def measure_duration(f: Callable) -> Callable:
     """Report command duration.
 
@@ -342,7 +370,9 @@ def measure_duration(f: Callable) -> Callable:
             "cmd_unload_tool": "MMU_UNLOAD",
             "cmd_select_tool": "MMU_SELECT",
             "cmd_unselect_tool": "MMU_UNSELECT",
-            "cmd_calibrate_pulley_rotation_distance": "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE",
+            "cmd_calibrate_pulley_rotation_distance": (
+                "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE"
+            ),
             "cmd_home_mmu": "MMU_HOME",
         }.get(f.__name__, f.__name__)
         if f_name in ["T"]:
@@ -1349,14 +1379,14 @@ class MMU3:
         self.gcode.register_command("MMU_CHANGE_TOOL", self.cmd_mmu_change_tool)
         self.gcode.register_command("MMU_PRELOAD", self.cmd_mmu_preload)
         self.gcode.register_command("MMU_RECOVER", self.cmd_mmu_recover)
+        self.gcode.register_command("MMU_CHECK_GATE", self.cmd_mmu_check_gate)
+        self.gcode.register_command("MMU_CHECK_GATES", self.cmd_mmu_check_gates)
         for name in (
             "MMU_TTG_MAP",
             "MMU_REMAP_TTG",
             "MMU_ENDLESS_SPOOL",
             "MMU_SLICER_TOOL_MAP",
             "MMU_SPOOLMAN",
-            "MMU_CHECK_GATE",
-            "MMU_CHECK_GATES",
             "MMU_SYNC_GEAR_MOTOR",
             "MMU_MOTORS_ON",
         ):
@@ -2533,6 +2563,52 @@ class MMU3:
 
         return True
 
+    @reports_action(ACTION_CHECKING)
+    def check_gates(self, gates: list[int], quiet: bool = False) -> bool:
+        """Check which gates have filament by feeding each to FINDA and back.
+
+        ``load_filament_to_finda()`` records each gate as available or empty.
+        An empty gate does not stop the check. The previously selected gate
+        is re-selected at the end.
+
+        Args:
+            gates (list[int]): The gates to check.
+            quiet (bool): Do not print the summary.
+
+        Returns:
+            bool: False if a gate could not be selected or its filament could
+                not be unloaded from FINDA, True otherwise (empty gates
+                included).
+        """
+        if self.is_paused:
+            return False
+
+        previous_tool = self.current_tool
+        results = {}
+        try:
+            for gate in gates:
+                self.respond_debug(f"Checking gate {gate}")
+                if not self.select_tool(gate):
+                    return False
+                if not self.load_filament_to_finda():
+                    results[gate] = GATE_EMPTY
+                    continue
+                results[gate] = GATE_AVAILABLE
+                if not self.unload_filament_from_finda():
+                    return False
+            if previous_tool is not None and previous_tool != self.current_tool:
+                return self.select_tool(previous_tool)
+            return True
+        finally:
+            if results and not quiet:
+                self.respond_info(
+                    "Gate check: "
+                    + ", ".join(
+                        f"Gate {gate}: {GATE_STATUS_TEXT[status]}"
+                        for gate, status in results.items()
+                    )
+                )
+
     def load_filament_to_finda(self) -> bool:
         """Load filament until the FINDA detect it.
 
@@ -3032,8 +3108,7 @@ class MMU3:
             self.respond_debug("And no filament in FINDA")
             self.respond_debug("No need to unload!")
             return True
-        else:
-            self.respond_debug(f"Current filament is T{self.current_filament}")
+        self.respond_debug(f"Current filament is T{self.current_filament}")
 
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
             self.respond_debug(f"Cut T{self.current_filament}")
@@ -3649,6 +3724,120 @@ class MMU3:
             return False
         return self.cmd_preload_filament_to_finda(gcmd, filament_id=gate)
 
+    def get_check_gates_param(
+        self, gcmd: GCodeCommand, check_all: bool
+    ) -> None | list[int]:
+        """Return the gates ``MMU_CHECK_GATE`` / ``MMU_CHECK_GATES`` check.
+
+        Reads Happy Hare's ``ALL=1``, ``GATES=``, ``TOOLS=``, ``GATE=`` and
+        ``TOOL=`` in that order. Tools are gates on the MMU3 (no remapping).
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            check_all (bool): Check all gates when no parameter is given,
+                otherwise check the selected gate.
+
+        Raises:
+            gcmd.error: If a gate is not an integer or does not exist.
+
+        Returns:
+            None | list[int]: The gates to check, None if no gate is given
+                and none is selected.
+        """
+        all_gates = list(range(self.gate_map.num_gates))
+        if gcmd.get_int("ALL", 0, minval=0, maxval=1):
+            return all_gates
+
+        gates = get_gate_list_param(gcmd, "GATES")
+        if gates is None:
+            gates = get_gate_list_param(gcmd, "TOOLS")
+        if gates is None:
+            gate = gcmd.get_int("GATE", None)
+            if gate is None:
+                gate = gcmd.get_int("TOOL", None)
+            if gate is not None:
+                gates = [gate]
+        if gates is None:
+            if check_all:
+                return all_gates
+            if self.current_tool is None:
+                return None
+            gates = [self.current_tool]
+
+        for gate in gates:
+            if not self.gate_map.is_valid_gate(gate):
+                raise gcmd.error(f"Invalid gate: {gate}")
+        # keep the order but check each gate once
+        return list(dict.fromkeys(gates))
+
+    def cmd_mmu_check_gate(self, gcmd: GCodeCommand) -> bool:
+        """Check the selected gate, or the ones given, for filament.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        return self.check_gates_command(gcmd, check_all=False)
+
+    def cmd_mmu_check_gates(self, gcmd: GCodeCommand) -> bool:
+        """Check all gates, or the ones given, for filament.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        return self.check_gates_command(gcmd, check_all=True)
+
+    def check_gates_command(self, gcmd: GCodeCommand, check_all: bool) -> bool:
+        """Validate a gate check request and run it.
+
+        Refused without pausing the MMU while filament is loaded, as checking
+        feeds each gate to FINDA.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            check_all (bool): Check all gates when no parameter is given.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        gates = self.get_check_gates_param(gcmd, check_all)
+        if gates is None:
+            self.respond_info("No gate selected, use MMU_CHECK_GATE GATE=<gate>.")
+            return False
+        if self.filament_pos != FilamentPos.UNLOADED:
+            self.respond_info(
+                f"T{self.current_filament} is loaded, unload it before "
+                f"checking gates."
+            )
+            return False
+        if self.enable_no_selector_mode:
+            self.respond_info("Checking gates is not supported in no selector mode.")
+            return False
+        quiet = bool(gcmd.get_int("QUIET", 0, minval=0, maxval=1))
+        return self.cmd_check_gates(gcmd, gates=gates, quiet=quiet)
+
+    @auto_pause
+    @auto_disable_steppers
+    def cmd_check_gates(
+        self, gcmd: GCodeCommand, gates: list[int], quiet: bool = False
+    ) -> bool:
+        """Check the given gates for filament.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            gates (list[int]): The gates to check.
+            quiet (bool): Do not print the summary.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        return self.check_gates(gates, quiet=quiet)
+
     def cmd_mmu_recover(self, gcmd: GCodeCommand) -> bool:
         """Recover the MMU state.
 
@@ -3776,11 +3965,6 @@ class MMU3:
 
     def print_gate_map(self) -> None:
         """Print the gate map to the console."""
-        status_text = {
-            GATE_UNKNOWN: "unknown",
-            GATE_EMPTY: "empty",
-            GATE_AVAILABLE: "available",
-        }
         lines = ["Gate map:"]
         for gate, info in enumerate(self.gate_map.gates):
             parts = [f"Gate {gate}:"]
@@ -3793,7 +3977,7 @@ class MMU3:
                 parts.append(f"{info.temperature}C")
             if info.spool_id != NO_SPOOL:
                 parts.append(f"spool={info.spool_id}")
-            parts.append(f"[{status_text.get(info.status, info.status)}]")
+            parts.append(f"[{GATE_STATUS_TEXT.get(info.status, info.status)}]")
             if gate == self.current_filament:
                 parts.append("<- loaded")
             lines.append(" ".join(str(p) for p in parts))
