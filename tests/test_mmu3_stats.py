@@ -50,8 +50,8 @@ def test_record_counts_attempts_regardless_of_kind() -> None:
     stats = OperationStats()
     stats.record(Operation(OperationKind.HOME), success=True)
     stats.record(Operation(OperationKind.HOME), success=True)
-    stats.record(Operation(OperationKind.EJECT), success=True)
-    assert stats.attempts == {OperationKind.HOME: 2, OperationKind.EJECT: 1}
+    stats.record(Operation(OperationKind.CUT), success=True)
+    assert stats.attempts == {OperationKind.HOME: 2, OperationKind.CUT: 1}
     assert stats.failures == {}
 
 
