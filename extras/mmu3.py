@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from klippy import Printer
     from mcu import MCU_endstop
     from reactor import PollReactor as Reactor
+    from stepper import MCU_stepper
     from toolhead import ToolHead
 
     from extras.display_status import DisplayStatus
@@ -815,6 +816,191 @@ class ExtruderSynchronizer:
             self.mmu3.unsync_stepper_from_extruder(self.manual_stepper, self.orig_trapq)
 
 
+class FilamentTracker:
+    """Track how far the filament tip is from FINDA, for the MMU panel.
+
+    FINDA is the origin: it is the first point the MMU homes the filament to,
+    anything before it is unknown. While a load / unload step runs, the
+    distance is followed live from the pulley stepper, which also drives the
+    filament while it is synced to the extruder. Between steps the distance
+    measured by the last step is reported, or a nominal one derived from the
+    configured lengths when ``filament_pos`` was set some other way.
+
+    ``position()`` and ``bowden_progress()`` are called from ``get_status()``
+    and only read the host side step history of the pulley stepper, they
+    never query the MCU.
+
+    Args:
+        mmu3 (MMU3): The MMU3 instance to track the filament of.
+    """
+
+    def __init__(self, mmu3: MMU3) -> None:
+        self.mmu3 = mmu3
+        # (filament_pos, mm) measured at the end of the last tracked step
+        self._measured: None | tuple[FilamentPos, float] = None
+        # (pulley steps, mm) at the start of the running step
+        self._start: None | tuple[int, float] = None
+        self._is_bowden_move = False
+
+    @property
+    def is_tracking(self) -> bool:
+        """Return True while a load / unload step is tracked."""
+        return self._start is not None
+
+    @property
+    def is_bowden_move(self) -> bool:
+        """Return True while the filament moves between FINDA and the extruder."""
+        return self.is_tracking and self._is_bowden_move
+
+    @property
+    def bowden_length(self) -> float:
+        """Return the nominal FINDA to extruder distance."""
+        return float(self.mmu3.bowden_load_length1)
+
+    def nominal_position(self, filament_pos: FilamentPos) -> float:
+        """Return the nominal distance of a filament position from FINDA.
+
+        Args:
+            filament_pos (FilamentPos): The filament position.
+
+        Returns:
+            float: The distance in mm.
+        """
+        mmu3 = self.mmu3
+        position = 0.0
+        if filament_pos >= FilamentPos.AT_EXTRUDER:
+            position += mmu3.bowden_load_length1
+        if filament_pos >= FilamentPos.IN_HOTEND:
+            position += mmu3.bowden_load_length3
+        if filament_pos >= FilamentPos.LOADED:
+            position += mmu3.extra_load_length
+        return position
+
+    def _pulley_mcu_stepper(self) -> MCU_stepper:
+        """Return the pulley stepper's MCU stepper."""
+        return self.mmu3.pulley_stepper.get_steppers()[0]
+
+    def _queued_steps(self) -> int:
+        """Return the pulley step count once every queued move completes."""
+        self.mmu3.toolhead.flush_step_generation()
+        return self._pulley_mcu_stepper().get_mcu_position()
+
+    def _moved(self, steps: int) -> float:
+        """Return the distance the pulley moved since the step started.
+
+        Args:
+            steps (int): The current pulley step count.
+
+        Returns:
+            float: The distance in mm, negative when unloading.
+        """
+        start_steps, _ = self._start
+        return (steps - start_steps) * self._pulley_mcu_stepper().get_step_dist()
+
+    def _stored_position(self) -> float:
+        """Return the position when no step is tracked."""
+        filament_pos = self.mmu3.filament_pos
+        if filament_pos <= FilamentPos.AT_FINDA:
+            # FINDA is the origin, and what is before it is not known
+            return 0.0
+        if self._measured is not None and self._measured[0] == filament_pos:
+            return self._measured[1]
+        return self.nominal_position(filament_pos)
+
+    def position(self, eventtime: float) -> float:
+        """Return the distance of the filament tip from FINDA.
+
+        Args:
+            eventtime (float): The current event time.
+
+        Returns:
+            float: The distance in mm.
+        """
+        if not self.is_tracking:
+            return self._stored_position()
+        mcu_stepper = self._pulley_mcu_stepper()
+        print_time = mcu_stepper.get_mcu().estimated_print_time(eventtime)
+        steps = mcu_stepper.get_past_mcu_position(print_time)
+        _, start_position = self._start
+        return max(0.0, start_position + self._moved(steps))
+
+    def bowden_progress(self, eventtime: float) -> int:
+        """Return how far the bowden move has got, in Happy Hare's convention.
+
+        Args:
+            eventtime (float): The current event time.
+
+        Returns:
+            int: 0 at FINDA to 100 at the extruder, -1 when not in a bowden
+                move.
+        """
+        if not self.is_bowden_move or self.bowden_length <= 0:
+            return -1
+        progress = self.position(eventtime) / self.bowden_length * 100
+        return round(max(0.0, min(100.0, progress)))
+
+    def advance(self, distance: float) -> None:
+        """Add a move the pulley did not see, e.g. an extruder only push.
+
+        Args:
+            distance (float): The distance in mm, negative when unloading.
+        """
+        if self.is_tracking:
+            start_steps, start_position = self._start
+            self._start = (start_steps, start_position + distance)
+
+    @contextlib.contextmanager
+    def track(self, is_bowden_move: bool = False) -> Iterator[None]:
+        """Follow the filament live while the body runs.
+
+        Nested calls are merged into the outermost one.
+
+        Args:
+            is_bowden_move (bool): The body moves the filament between FINDA
+                and the extruder, report ``bowden_progress`` meanwhile.
+
+        Yields:
+            None: Control to the body.
+        """
+        if self.is_tracking:
+            yield
+            return
+        self._start = (self._queued_steps(), self._stored_position())
+        self._is_bowden_move = is_bowden_move
+        try:
+            yield
+            _, start_position = self._start
+            position = max(0.0, start_position + self._moved(self._queued_steps()))
+            self._measured = (self.mmu3.filament_pos, position)
+        finally:
+            self._start = None
+            self._is_bowden_move = False
+
+
+def tracks_filament(is_bowden_move: bool = False) -> Callable:
+    """Decorator factory that follows the filament while the method runs.
+
+    See :meth:`FilamentTracker.track`.
+
+    Args:
+        is_bowden_move (bool): The method moves the filament between FINDA
+            and the extruder.
+
+    Returns:
+        Callable: The actual decorator.
+    """
+
+    def decorator(f: Callable) -> Callable:
+        @wraps(f)
+        def wrapped_f(self: MMU3, *args, **kwargs) -> bool:
+            with self.filament_tracker.track(is_bowden_move):
+                return f(self, *args, **kwargs)
+
+        return wrapped_f
+
+    return decorator
+
+
 class MMU3:
     """MMU3 class to manage the MMU3 multi-material unit.
 
@@ -866,6 +1052,8 @@ class MMU3:
         self.current_filament = None
         # how far the filament tip has moved from the MMU toward the nozzle
         self.filament_pos = FilamentPos.UNLOADED
+        # how far, in mm, the filament tip is from FINDA
+        self.filament_tracker = FilamentTracker(self)
         # what the MMU is doing right now, in Happy Hare's vocabulary
         # (reported to the Mainsail / Fluidd MMU panel)
         self.action = ACTION_IDLE
@@ -2220,6 +2408,7 @@ class MMU3:
 
         return True
 
+    @tracks_filament()
     def load_filament_to_hotend(self) -> bool:
         """Load the filament to hotend with perfectly synchronized steppers.
 
@@ -2269,6 +2458,8 @@ class MMU3:
                 G90
                 G0 F{self.travel_speed * 60}
             """)
+            # the idler is released, the pulley does not see this push
+            self.filament_tracker.advance(self.extra_load_length)
         elif self.filament_motion_sensor:
             # wiggle the filament back and forth and check the encoder sensor
             # to make sure the filament is really grabbed by the extruder gear
@@ -2279,6 +2470,7 @@ class MMU3:
                 G1 E{detection_length} F{self.pulley_load_to_extruder_speed * 60}
                 G90
             """)
+            self.filament_tracker.advance(detection_length)
         self.toolhead.wait_moves()
 
         if self.filament_motion_sensor and not self.is_filament_moving():
@@ -2321,6 +2513,7 @@ class MMU3:
             self.toolhead.wait_moves()
         return True
 
+    @tracks_filament()
     def unload_filament_from_hotend(self) -> bool:
         """Unload the filament from the nozzle (without RAMMING !!!).
 
@@ -2667,6 +2860,7 @@ class MMU3:
         self.respond_debug("Loading done to FINDA")
         return True
 
+    @tracks_filament(is_bowden_move=True)
     def load_filament_from_finda_to_extruder(self) -> bool:
         """Load from the FINDA to the extruder gear.
 
@@ -2830,6 +3024,7 @@ class MMU3:
         self.respond_debug("Unloading done from FINDA")
         return True
 
+    @tracks_filament(is_bowden_move=True)
     def unload_filament_from_extruder_to_finda(self) -> bool:
         """Unload from extruder gear to the FINDA.
 

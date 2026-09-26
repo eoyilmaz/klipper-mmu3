@@ -59,7 +59,7 @@ Small, low-risk items that make the panel and existing commands more complete.
   ([#50](https://github.com/eoyilmaz/klipper-mmu3/issues/50)) Register the `MMU` command, keep the
   old names as deprecated aliases. Also add `MMU_HELP` and `MMU_STATUS` (a one-shot human readable
   summary).
-- [ ] **Report `filament_position` (mm) and `bowden_progress` (%).**
+- [x] **Report `filament_position` (mm) and `bowden_progress` (%).**
   ([#51](https://github.com/eoyilmaz/klipper-mmu3/issues/51)) Both are hard coded today. Track the
   gear stepper position during bowden moves so the panel's filament bar animates. Must be read from
   already known values in `get_status()`, never from the MCU.

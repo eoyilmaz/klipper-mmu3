@@ -22,6 +22,7 @@ sys.modules.setdefault(
 from extras.mmu3 import (  # noqa: E402
     MMU3,
     FilamentPos,
+    FilamentTracker,
     FilamentSwitchSensorPosition,
     Operation,
     OperationKind,
@@ -90,6 +91,10 @@ def make_mmu(num_tools: int = 5) -> MMU3:
     mmu.filament_switch_sensor = None
     mmu.filament_switch_sensor_position = FilamentSwitchSensorPosition.PreGears
     mmu.enable_no_selector_mode = False
+    mmu.bowden_load_length1 = 450
+    mmu.bowden_load_length3 = 20
+    mmu.extra_load_length = 30
+    mmu.filament_tracker = FilamentTracker(mmu)
     return mmu
 
 
