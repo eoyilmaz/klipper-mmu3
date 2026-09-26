@@ -55,7 +55,7 @@ Small, low-risk items that make the panel and existing commands more complete.
 - [x] **Accept `TOOL=` on `MMU_SELECT`, `MMU_LOAD` and `MMU_PRELOAD`.**
   ([#49](https://github.com/eoyilmaz/klipper-mmu3/issues/49)) Happy Hare accepts `TOOL=` or `GATE=`
   on most commands. Extend `get_gate_param()`.
-- [ ] **Unify `MMU_ENABLE` / `MMU_DISABLE` with Happy Hare's `MMU ENABLE=0|1`.**
+- [x] **Unify `MMU_ENABLE` / `MMU_DISABLE` with Happy Hare's `MMU ENABLE=0|1`.**
   ([#50](https://github.com/eoyilmaz/klipper-mmu3/issues/50)) Register the `MMU` command, keep the
   old names as deprecated aliases. Also add `MMU_HELP` and `MMU_STATUS` (a one-shot human readable
   summary).
