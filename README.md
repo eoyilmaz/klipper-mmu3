@@ -178,33 +178,25 @@ The extension supplies all the necessary gcode commands.
 
    Homes the idler only.
 
-4. `HOME_MMU_ONLY`
+4. `MMU_SELECT` / `MMU_UNSELECT`
 
-   Homes the idler and selector, and tries to load the filament 0 to FINDA to
-   verify everything is working fine and unloads it. Very rarely used...
-
-5. `MMU_SELECT` / `MMU_UNSELECT`
-
-   Selects the requested gate (`GATE=` or `VALUE=`), or parks the idler:
+   Selects the requested gate (`GATE=`, `TOOL=` or `VALUE=`), or parks the
+   idler:
 
    ```gcode
    MMU_SELECT GATE=0
    ```
 
-6. `LOAD_FILAMENT_TO_FINDA` / `UNLOAD_FILAMENT_FROM_FINDA`
+   Tools are gates on the MMU3, so `TOOL=0` is the same as `GATE=0`. Giving
+   both with different values is an error. This applies to all commands that
+   take a gate.
 
-   Loads/Unloads the filament to FINDA.
-
-7. `LOAD_FILAMENT_TO_EXTRUDER` / `UNLOAD_FILAMENT_FROM_EXTRUDER`
-
-   Loads/Unloads the filament from extruder.
-
-8. `MMU_UNLOCK`
+5. `MMU_UNLOCK`
 
    Unlocks the MMU by moving the idler to the home position. Mostly needed when
    you need to pull/push the filament manually.
 
-9. `MMU_RETRY`
+6. `MMU_RETRY`
 
    Retries the load/unload operation that failed and left the MMU paused. The
    MMU remembers what it was doing (which `Tx`, load or unload) and how far it
@@ -213,19 +205,19 @@ The extension supplies all the necessary gcode commands.
    the whole sequence over. `printer["mmu3 MMU3"].pending_operation` and
    `.filament_pos` report the current recovery state.
 
-10. `RESUME_MMU` / `RESUME_MMU FORCE=1`
+7. `RESUME_MMU` / `RESUME_MMU FORCE=1`
 
    `RESUME_MMU` runs `MMU_RETRY` first and only resumes the print if the
    recovery succeeds. `RESUME_MMU FORCE=1` clears the pending operation and
    resumes anyway - use it when you have already fixed the filament by hand.
 
-11. `CUT_FILAMENT_IN_EXTRUDER`
+8. `CUT_FILAMENT_IN_EXTRUDER`
 
    This macro is defined in the `mmu3.cfg` and controls the movement required
    to cut the filament inside the extruder. This is called by the `Tx` commands
    if the `enable_filament_cutter` is set to `True`.
 
-12. `PULLEY_CALIBRATE`
+9. `PULLEY_CALIBRATE`
 
    This command is used to calibrate the pulley `rotation_distance` value. The
    process works like this:
@@ -244,11 +236,11 @@ The extension supplies all the necessary gcode commands.
    - Adjust the `rotation_distance` value of the `pulley_stepper` in your
      `mmu3.cfg` file by `{current_value} * {measured_distance} / 100`.
 
-13. `MMU_STATS` / `MMU_STATS_RESET_JOB`
+10. `MMU_STATS` / `MMU_STATS_RESET_JOB`
 
    `MMU_STATS` prints a summary of the operation statistics tracked for
-   every top level MMU operation (tool changes, loads, unloads, homes, cuts
-   and ejects): how many times each was attempted, how many failed, and a
+   every top level MMU operation (tool changes, loads, unloads, homes and
+   cuts): how many times each was attempted, how many failed, and a
    tally of successful tool changes by from/to tool. Two independent sets
    are tracked and also exposed as `printer["mmu3 MMU3"].total_stats` /
    `.job_stats`:
@@ -267,19 +259,19 @@ The extension supplies all the necessary gcode commands.
    Stats` and `Print Full Report` (runs `MMU_STATS`, useful when the display
    is too small to show everything, e.g. the per-tool toolchange tally).
 
-14. `MMU_LOAD` / `MMU_UNLOAD` / `MMU_EJECT`
+11. `MMU_LOAD` / `MMU_UNLOAD` / `MMU_EJECT`
 
-   `MMU_LOAD` loads the filament of a gate to the nozzle (`MMU_LOAD GATE=2`,
-   without `GATE=` the selected gate is loaded). `MMU_UNLOAD` unloads the
+   `MMU_LOAD` loads the filament of a gate to the nozzle (`MMU_LOAD GATE=2`
+   or `MMU_LOAD TOOL=2`, without a gate the selected gate is loaded). `MMU_UNLOAD` unloads the
    filament from the nozzle back to the MMU. `MMU_EJECT` does the same and also
    parks the idler, so the filament can be pulled out by hand (same as
    `M702`).
 
-15. `MMU_MOTORS_OFF`
+12. `MMU_MOTORS_OFF`
 
    Turns off the MMU stepper motors.
 
-16. `MMU_GATE_MAP`
+13. `MMU_GATE_MAP`
 
    Shows or edits what is loaded in each gate. This is normally done from the
    Mainsail / Fluidd MMU panel (see
@@ -316,36 +308,27 @@ user facing functionality, but are residues from the previous GCode Macro based
 design.
 
    ```gcode
-   EJECT_BEFORE_HOME
-   EJECT_FROM_EXTRUDER
-   EJECT_RAMMING
    ENDSTOPS_STATUS
    GET_MMU_PARAM
    HOME_IDLER
-   HOME_MMU_ONLY
    K0  ; Not supported with MMU3-12x
    K1  ; Not supported with MMU3-12x
    K2  ; Not supported with MMU3-12x
    K3  ; Not supported with MMU3-12x
    K4  ; Not supported with MMU3-12x
-   LOAD_FILAMENT_FROM_FINDA_TO_EXTRUDER
-   LOAD_FILAMENT_TO_EXTRUDER
-   LOAD_FILAMENT_TO_FINDA
-   LOAD_FILAMENT_TO_FINDA_IN_LOOP
-   LOAD_FILAMENT_TO_HOTEND
    M702
-   MMU_CHANGE_TOOL  ; only with enable_mmu_panel
-   MMU_CHECK_GATE   ; only with enable_mmu_panel
-   MMU_CHECK_GATES  ; only with enable_mmu_panel
+   MMU_CHANGE_TOOL
+   MMU_CHECK_GATE
+   MMU_CHECK_GATES
    MMU_DISABLE
    MMU_EJECT
    MMU_ENABLE
-   MMU_GATE_MAP     ; only with enable_mmu_panel
+   MMU_GATE_MAP
    MMU_HOME
    MMU_LOAD
    MMU_MOTORS_OFF
-   MMU_PRELOAD      ; only with enable_mmu_panel
-   MMU_RECOVER      ; only with enable_mmu_panel
+   MMU_PRELOAD
+   MMU_RECOVER
    MMU_RETRY
    MMU_SELECT
    MMU_STATS
@@ -354,11 +337,8 @@ design.
    MMU_UNLOCK
    MMU_UNSELECT
    PAUSE_MMU
-   PRE_LOAD_FILAMENT_TO_FINDA
    PULLEY_CALIBRATE
    RESUME_MMU
-   RETRY_LOAD_FILAMENT_TO_HOTEND
-   RETRY_UNLOAD_FILAMENT_FROM_HOTEND
    SET_MMU_PARAM
    T0
    T1
@@ -372,11 +352,6 @@ design.
    T9
    T10
    T11
-   UNLOAD_FILAMENT_FROM_EXTRUDER
-   UNLOAD_FILAMENT_FROM_EXTRUDER_TO_FINDA
-   UNLOAD_FILAMENT_FROM_FINDA
-   UNLOAD_FILAMENT_FROM_HOTEND
-   UNLOAD_FILAMENT_FROM_HOTEND_WITH_RAMMING
    ```
 
 ## Mainsail / Fluidd MMU Panel & Spoolman
@@ -410,11 +385,10 @@ the next gate. Both commands accept Happy Hare's `GATE=`, `GATES=0,2,3`,
 `TOOL=`, `TOOLS=`, `ALL=1` and `QUIET=1`, and are refused while filament is
 loaded.
 
-This is enabled by default and can be turned off in `[mmu3 MMU3]`:
+The panel support is always on. Spoolman support is set in `[mmu3 MMU3]`:
 
 ```ini
 [mmu3 MMU3]
-enable_mmu_panel: True
 spoolman_support: readonly  # off, readonly
 ```
 

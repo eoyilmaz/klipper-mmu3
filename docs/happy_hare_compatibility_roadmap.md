@@ -49,10 +49,10 @@ Small, low-risk items that make the panel and existing commands more complete.
 
 - [x] **Implement `MMU_CHECK_GATE`.** ([#48](https://github.com/eoyilmaz/klipper-mmu3/issues/48))
   Currently replies "not supported", but the MMU3 can do it: feed each gate to FINDA and back like
-  `PRE_LOAD_FILAMENT_TO_FINDA`, and record the result with `set_gate_status()`. Support `GATE=`,
+  `MMU_PRELOAD`, and record the result with `set_gate_status()`. Support `GATE=`,
   `GATES=0,2,3`, `TOOL=` and `ALL=1`. Must refuse while filament is loaded (same check as
   `MMU_PRELOAD`). The panel's "Check gates" button then works.
-- [ ] **Accept `TOOL=` on `MMU_SELECT`, `MMU_LOAD` and `MMU_PRELOAD`.**
+- [x] **Accept `TOOL=` on `MMU_SELECT`, `MMU_LOAD` and `MMU_PRELOAD`.**
   ([#49](https://github.com/eoyilmaz/klipper-mmu3/issues/49)) Happy Hare accepts `TOOL=` or `GATE=`
   on most commands. Extend `get_gate_param()`.
 - [ ] **Unify `MMU_ENABLE` / `MMU_DISABLE` with Happy Hare's `MMU ENABLE=0|1`.**
@@ -83,6 +83,11 @@ Small, low-risk items that make the panel and existing commands more complete.
 - [ ] **Remove the deprecated aliases** ([#57](https://github.com/eoyilmaz/klipper-mmu3/issues/57))
   (`LT`, `UT`, `HOME_MMU`, `UNLOCK_MMU`, `SELECT_TOOL`, `UNSELECT_TOOL`) in a later release, after
   announcing it in the release notes.
+- [ ] **Rename `[mmu3 MMU3]` to Happy Hare's `[mmu]`.**
+  ([#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)) Rename `extras/mmu3.py` to
+  `extras/mmu.py` and `MMU3` to `MMU`, and make the extension itself the `printer.mmu` object
+  instead of adding a separate `MmuStatus`. Breaking change: a leftover `[mmu3 MMU3]` section must
+  fail with a message explaining the rename, and `install.sh` must remove the old link.
 
 ## Phase 2 — Print Lifecycle and Macros
 

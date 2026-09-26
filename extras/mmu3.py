@@ -135,7 +135,6 @@ class OperationKind(enum.Enum):
     UNLOAD = "unload"
     HOME = "home"
     CUT = "cut"
-    EJECT = "eject"
 
     def __repr__(self) -> str:
         """Return the enum name for str().
@@ -203,8 +202,6 @@ class Operation:
             )
         elif self.kind == OperationKind.CUT:
             what = f"Cut T{self.to_tool}"
-        elif self.kind == OperationKind.EJECT:
-            what = "Eject filament"
         else:
             what = "Home MMU"
 
@@ -309,20 +306,33 @@ class OperationStats:
         return stats
 
 
-def get_gate_param(gcmd: None | GCodeCommand) -> None | int:
-    """Return the gate given with ``GATE=`` (Happy Hare style) or ``VALUE=``.
+def get_gate_param(gcmd: None | GCodeCommand, minval: None | int = None) -> None | int:
+    """Return the gate given with ``GATE=``, ``TOOL=`` or ``VALUE=``.
+
+    ``GATE=`` and ``TOOL=`` are Happy Hare style, ``VALUE=`` is the old MMU3
+    style. They are read in that order. Tools are gates on the MMU3 (no
+    remapping), so ``TOOL=n`` means gate ``n``.
 
     Args:
         gcmd (None | GCodeCommand): The G-code command.
+        minval (None | int): The smallest accepted value.
+
+    Raises:
+        gcmd.error: If ``GATE=`` and ``TOOL=`` are both given and differ.
 
     Returns:
-        None | int: The gate, None if neither parameter is given.
+        None | int: The gate, None if no parameter is given.
     """
     if gcmd is None:
         return None
-    gate = gcmd.get_int("GATE", None)
+    gate = gcmd.get_int("GATE", None, minval=minval)
+    tool = gcmd.get_int("TOOL", None, minval=minval)
+    if gate is not None and tool is not None and gate != tool:
+        raise gcmd.error(f"GATE={gate} and TOOL={tool} differ, give only one.")
     if gate is None:
-        gate = gcmd.get_int("VALUE", None)
+        gate = tool
+    if gate is None:
+        gate = gcmd.get_int("VALUE", None, minval=minval)
     return gate
 
 
@@ -878,8 +888,14 @@ class MMU3:
 
         # per gate filament metadata, persisted via save_variables
         self.gate_map = GateMap(self.number_of_tools)
-        # Mainsail / Fluidd MMU panel and Spoolman
-        self.enable_mmu_panel = config.getboolean("enable_mmu_panel", True)
+        # the Mainsail / Fluidd MMU panel is always enabled now, the option is
+        # still read so configs that set it keep working
+        if config.get("enable_mmu_panel", None) is not None:
+            logger.warning(
+                "mmu3: enable_mmu_panel is no longer used, the MMU panel is "
+                "always enabled. Remove it from [mmu3 MMU3]."
+            )
+        # Spoolman
         self.spoolman_support = config.getchoice(
             "spoolman_support",
             list(SPOOLMAN_SUPPORT_VALUES),
@@ -1001,8 +1017,7 @@ class MMU3:
 
         # register commands
         self.register_commands()
-        if self.enable_mmu_panel:
-            self.register_mmu_panel()
+        self.register_mmu_panel()
         self.printer.register_event_handler("klippy:connect", self._connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -1268,23 +1283,14 @@ class MMU3:
         )
         self.gcode.register_command("GET_MMU_PARAM", self.cmd_get_mmu_param)
         self.gcode.register_command("SET_MMU_PARAM", self.cmd_set_mmu_param)
-        self.gcode.register_command(
-            "PRE_LOAD_FILAMENT_TO_FINDA", self.cmd_preload_filament_to_finda
-        )
-        self.gcode.register_command(
-            "LOAD_FILAMENT_TO_FINDA_IN_LOOP", self.cmd_load_filament_to_finda_in_loop
-        )
         self.gcode.register_command("ENDSTOPS_STATUS", self.cmd_endstops_status)
         self.gcode.register_command("HOME_IDLER", self.cmd_home_idler)
         self.gcode.register_command("MMU_HOME", self.cmd_home_mmu)
-        self.gcode.register_command("HOME_MMU_ONLY", self.cmd_home_mmu_only)
         self.gcode.register_command("PAUSE_MMU", self.cmd_pause)
         self.gcode.register_command("RESUME_MMU", self.cmd_resume)
         self.gcode.register_command("MMU_RETRY", self.cmd_mmu_retry)
         self.gcode.register_command("MMU_STATS", self.cmd_mmu_stats)
-        self.gcode.register_command(
-            "MMU_STATS_RESET_JOB", self.cmd_mmu_stats_reset_job
-        )
+        self.gcode.register_command("MMU_STATS_RESET_JOB", self.cmd_mmu_stats_reset_job)
 
         for i in range(self.number_of_tools):
             self.gcode.register_command(f"T{i}", partial(self.cmd_tx, tool_id=i))
@@ -1297,47 +1303,26 @@ class MMU3:
         self.gcode.register_command("MMU_SELECT", self.cmd_mmu_select)
         self.gcode.register_command("MMU_UNSELECT", self.cmd_unselect_tool)
         self.gcode.register_command("MMU_MOTORS_OFF", self.cmd_motors_off)
-        self.gcode.register_command(
-            "RETRY_LOAD_FILAMENT_TO_HOTEND", self.cmd_retry_load_filament_to_hotend
-        )
-        self.gcode.register_command(
-            "LOAD_FILAMENT_TO_HOTEND", self.cmd_load_filament_to_hotend
-        )
-        self.gcode.register_command(
-            "RETRY_UNLOAD_FILAMENT_FROM_HOTEND",
-            self.cmd_retry_unload_filament_from_hotend,
-        )
-        self.gcode.register_command(
-            "UNLOAD_FILAMENT_FROM_HOTEND", self.cmd_unload_filament_from_hotend
-        )
-        self.gcode.register_command("EJECT_RAMMING", self.cmd_eject_ramming)
-        self.gcode.register_command(
-            "UNLOAD_FILAMENT_FROM_HOTEND_WITH_RAMMING",
-            self.cmd_unload_filament_from_hotend_with_ramming,
-        )
-        self.gcode.register_command(
-            "LOAD_FILAMENT_TO_FINDA", self.cmd_load_filament_to_finda
-        )
-        self.gcode.register_command(
-            "LOAD_FILAMENT_FROM_FINDA_TO_EXTRUDER",
-            self.cmd_load_filament_from_finda_to_extruder,
-        )
-        self.gcode.register_command(
-            "LOAD_FILAMENT_TO_EXTRUDER", self.cmd_load_filament_to_extruder
-        )
-        self.gcode.register_command(
-            "UNLOAD_FILAMENT_FROM_FINDA", self.cmd_unload_filament_from_finda
-        )
-        self.gcode.register_command(
-            "UNLOAD_FILAMENT_FROM_EXTRUDER_TO_FINDA",
-            self.cmd_unload_filament_from_extruder_to_finda,
-        )
-        self.gcode.register_command(
-            "UNLOAD_FILAMENT_FROM_EXTRUDER", self.cmd_unload_filament_from_extruder
-        )
+        self.gcode.register_command("MMU_GATE_MAP", self.cmd_mmu_gate_map)
+        self.gcode.register_command("MMU_CHANGE_TOOL", self.cmd_mmu_change_tool)
+        self.gcode.register_command("MMU_PRELOAD", self.cmd_mmu_preload)
+        self.gcode.register_command("MMU_RECOVER", self.cmd_mmu_recover)
+        self.gcode.register_command("MMU_CHECK_GATE", self.cmd_mmu_check_gate)
+        self.gcode.register_command("MMU_CHECK_GATES", self.cmd_mmu_check_gates)
+        # Happy Hare commands without an MMU3 equivalent
+        for name in (
+            "MMU_TTG_MAP",
+            "MMU_REMAP_TTG",
+            "MMU_ENDLESS_SPOOL",
+            "MMU_SLICER_TOOL_MAP",
+            "MMU_SPOOLMAN",
+            "MMU_SYNC_GEAR_MOTOR",
+            "MMU_MOTORS_ON",
+        ):
+            self.gcode.register_command(
+                name, partial(self.cmd_not_supported, name=name)
+            )
         self.gcode.register_command("M702", self.cmd_m702)
-        self.gcode.register_command("EJECT_FROM_EXTRUDER", self.cmd_eject_from_extruder)
-        self.gcode.register_command("EJECT_BEFORE_HOME", self.cmd_eject_before_home)
 
         # the pre Happy Hare naming, kept working for existing slicer G-code
         # and macros
@@ -1362,37 +1347,18 @@ class MMU3:
     def register_mmu_panel(self) -> None:
         """Expose the MMU3 to the Mainsail / Fluidd MMU panel.
 
-        The panels look for Happy Hare's ``mmu`` / ``mmu_machine`` objects and
-        send Happy Hare commands, register compatible ones.
+        The panels look for Happy Hare's ``mmu`` / ``mmu_machine`` objects,
+        the Happy Hare commands they send are registered in
+        :meth:`register_commands`.
         """
         if self.printer.lookup_object("mmu", None) is not None:
             logger.warning(
                 "mmu3: an 'mmu' object already exists (Happy Hare?), "
                 "not registering the MMU3 panel support."
             )
-            self.enable_mmu_panel = False
             return
         self.printer.add_object("mmu", MmuStatus(self))
         self.printer.add_object("mmu_machine", MmuMachine(self))
-
-        self.gcode.register_command("MMU_GATE_MAP", self.cmd_mmu_gate_map)
-        self.gcode.register_command("MMU_CHANGE_TOOL", self.cmd_mmu_change_tool)
-        self.gcode.register_command("MMU_PRELOAD", self.cmd_mmu_preload)
-        self.gcode.register_command("MMU_RECOVER", self.cmd_mmu_recover)
-        self.gcode.register_command("MMU_CHECK_GATE", self.cmd_mmu_check_gate)
-        self.gcode.register_command("MMU_CHECK_GATES", self.cmd_mmu_check_gates)
-        for name in (
-            "MMU_TTG_MAP",
-            "MMU_REMAP_TTG",
-            "MMU_ENDLESS_SPOOL",
-            "MMU_SLICER_TOOL_MAP",
-            "MMU_SPOOLMAN",
-            "MMU_SYNC_GEAR_MOTOR",
-            "MMU_MOTORS_ON",
-        ):
-            self.gcode.register_command(
-                name, partial(self.cmd_not_supported, name=name)
-            )
 
     def get_mapped_tool_id(self, tool_id: int) -> int:
         """Return the mapped tool id.
@@ -1610,8 +1576,8 @@ class MMU3:
     def home_mmu(self) -> bool:
         """Home the MMU.
 
-        Eject filament if loaded with EJECT_BEFORE_HOME
-        next home the mmu with HOME_MMU_ONLY
+        Eject filament if loaded with eject_before_home()
+        next home the mmu with home_mmu_only()
 
         Returns:
             bool: True, if homed, False otherwise.
@@ -1968,8 +1934,7 @@ class MMU3:
         if op.target_pos == FilamentPos.UNLOADED:
             return self.filament_pos == FilamentPos.UNLOADED
         return (
-            self.filament_pos >= op.target_pos
-            and self.current_filament == op.to_tool
+            self.filament_pos >= op.target_pos and self.current_filament == op.to_tool
         )
 
     def retry_pending_operation(self) -> bool:
@@ -2338,24 +2303,6 @@ class MMU3:
         self.gcode.run_script_from_command("RAMMING_SLICER")
         self.toolhead.wait_moves()
 
-    def eject_ramming(self) -> bool:
-        """Eject the filament with ramming from the extruder nozzle to the MMU3.
-
-        Returns:
-            bool: True if ejected, False otherwise.
-        """
-        if self.is_paused:
-            return False
-
-        if self.current_filament is None:
-            return False
-
-        self.respond_debug(f"MMU_UNLOAD {self.current_filament} ...")
-        if not self.unload_filament_from_hotend_with_ramming():
-            return False
-        self.select_tool(self.current_filament)
-        return self.unload_filament_from_extruder()
-
     def unload_filament_from_hotend_with_ramming(self) -> bool:
         """Unload from extruder with ramming.
 
@@ -2534,34 +2481,27 @@ class MMU3:
         return True
 
     @reports_action(ACTION_CHECKING)
-    def pre_load_filament_to_finda(self, filament_id: int) -> bool:
-        """Pre load the selected filament to FINDA.
+    def pre_load_filament_to_finda(self, gate: int) -> bool:
+        """Feed the filament of a gate to FINDA and back.
 
         Args:
-            filament_id (int): The filament id to pre load. If it is -1,
-                pre-load all filaments.
+            gate (int): The gate to preload.
+
+        Returns:
+            bool: True if the filament reached FINDA and was unloaded again.
         """
         if self.is_paused:
             return False
 
-        if filament_id < -1 or filament_id >= self.number_of_tools:
-            self.display_status_msg(f"Invalid filament id: {filament_id}")
+        if not self.gate_map.is_valid_gate(gate):
+            self.display_status_msg(f"Invalid gate: {gate}")
             return False
 
-        if filament_id == -1:
-            filament_ids = range(self.number_of_tools)
-        else:
-            filament_ids = [filament_id]
-
-        for fid in filament_ids:
-            self.respond_debug(f"Pre-loading T{fid}")
-            self.select_tool(fid)
-            if not self.load_filament_to_finda():
-                return False
-            if not self.unload_filament_from_finda():
-                return False
-
-        return True
+        self.respond_debug(f"Pre-loading T{gate}")
+        self.select_tool(gate)
+        if not self.load_filament_to_finda():
+            return False
+        return self.unload_filament_from_finda()
 
     @reports_action(ACTION_CHECKING)
     def check_gates(self, gates: list[int], quiet: bool = False) -> bool:
@@ -2738,9 +2678,9 @@ class MMU3:
         return True
 
     def load_filament_to_extruder(self) -> bool:
-        """Load from MMU3 to extruder gear by calling LOAD_FILAMENT_TO_FINDA.
+        """Load from MMU3 to extruder gear by calling load_filament_to_finda().
 
-        Then LOAD_FILAMENT_FROM_FINDA_TO_EXTRUDER.
+        Then load_filament_from_finda_to_extruder().
         PAUSE_MMU is called if the FINDA does not detect the filament.
 
         Returns:
@@ -2803,10 +2743,7 @@ class MMU3:
         # (e.g. after a failed load-to-extruder attempt), so the short move
         # above is not enough to clear it. Keep pulling in bowden-length
         # steps until FINDA stops triggering instead of giving up.
-        if (
-            self.is_filament_in_finda()
-            and not self.unload_filament_to_finda_in_loop()
-        ):
+        if self.is_filament_in_finda() and not self.unload_filament_to_finda_in_loop():
             return False
 
         if self.is_filament_in_finda():
@@ -2915,8 +2852,8 @@ class MMU3:
     def unload_filament_from_extruder(self) -> bool:
         """Unload from the extruder gear to the MMU3.
 
-        Do it by calling UNLOAD_FILAMENT_FROM_EXTRUDER_TO_FINDA and
-        then UNLOAD_FILAMENT_FROM_FINDA
+        Do it by calling unload_filament_from_extruder_to_finda() and
+        then unload_filament_from_finda()
 
         Returns:
             bool: True, if filament unloaded from the extruder, False otherwise.
@@ -3256,8 +3193,8 @@ class MMU3:
     def cmd_home_mmu(self, gcmd: GCodeCommand) -> bool:
         """Home the MMU.
 
-        Eject filament if loaded with EJECT_BEFORE_HOME
-        next home the mmu with HOME_MMU_ONLY
+        Eject filament if loaded with eject_before_home()
+        next home the mmu with home_mmu_only()
 
         Args:
             gcmd (GcodeCommand): The G-code command.
@@ -3266,41 +3203,6 @@ class MMU3:
             bool: True if command completed successfully, False otherwise.
         """
         return self.home_mmu()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_home_mmu_only(self, gcmd: GCodeCommand) -> bool:
-        """Home the MMU.
-
-        Follow the steps:
-
-        1) home the idler
-        2) home the selector (if needed)
-        3) try to load filament 0 to FINDA and then unload it. Used to verify
-           the MMU3 gear
-
-        if all is ok, the MMU3 is ready to be used
-
-        Args:
-            gcmd (GcodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.home_mmu_only()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_load_filament_to_finda_in_loop(self, gcmd: GCodeCommand) -> bool:
-        """Load the filament to FINDA in a infinite loop.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.load_filament_to_finda_in_loop()
 
     def cmd_pause(self, gcmd: GCodeCommand) -> bool:
         """Pause the MMU.
@@ -3656,7 +3558,7 @@ class MMU3:
         return self.cmd_m702(gcmd)
 
     def cmd_mmu_select(self, gcmd: GCodeCommand) -> bool:
-        """Select a gate (``GATE=`` / ``VALUE=``).
+        """Select a gate (``GATE=`` / ``TOOL=`` / ``VALUE=``).
 
         Refuses to move the selector away from a gate whose filament is
         still in the path, as that would drag the selector across it.
@@ -3692,9 +3594,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = gcmd.get_int("GATE", None)
-        if gate is None:
-            gate = gcmd.get_int("TOOL", None)
+        gate = get_gate_param(gcmd)
         if not self.gate_map.is_valid_gate(gate):
             self.respond_info(f"MMU_CHANGE_TOOL needs a valid TOOL= or GATE= ({gate})")
             return False
@@ -3703,7 +3603,7 @@ class MMU3:
     def cmd_mmu_preload(self, gcmd: GCodeCommand) -> bool:
         """Check a gate by feeding its filament to FINDA and back.
 
-        Without ``GATE=`` the selected gate is preloaded.
+        Without ``GATE=`` / ``TOOL=`` the selected gate is preloaded.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
@@ -3722,7 +3622,7 @@ class MMU3:
                 f"T{self.current_filament} is loaded, unload it before preloading."
             )
             return False
-        return self.cmd_preload_filament_to_finda(gcmd, filament_id=gate)
+        return self.cmd_preload_filament_to_finda(gcmd, gate=gate)
 
     def get_check_gates_param(
         self, gcmd: GCodeCommand, check_all: bool
@@ -3811,8 +3711,7 @@ class MMU3:
             return False
         if self.filament_pos != FilamentPos.UNLOADED:
             self.respond_info(
-                f"T{self.current_filament} is loaded, unload it before "
-                f"checking gates."
+                f"T{self.current_filament} is loaded, unload it before checking gates."
             )
             return False
         if self.enable_no_selector_mode:
@@ -3854,9 +3753,7 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = gcmd.get_int("GATE", None, minval=-1)
-        if gate is None:
-            gate = gcmd.get_int("TOOL", None, minval=-1)
+        gate = get_gate_param(gcmd, minval=-1)
         loaded = gcmd.get_int("LOADED", None, minval=0, maxval=1)
 
         if gate is None and loaded is None:
@@ -3984,188 +3881,6 @@ class MMU3:
         self.respond_info("\n".join(lines))
 
     @auto_pause
-    @auto_disable_steppers
-    def cmd_retry_load_filament_to_hotend(self, gcmd: GCodeCommand) -> bool:
-        """Try to reinsert the filament into the hotend.
-
-        Called when the IR sensor does not detect the filament the MMU3 push
-        the filament of 10mm and the extruder gear try to insert it into the
-        nozzle.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.retry_load_filament_to_hotend()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_load_filament_to_hotend(self, gcmd: GCodeCommand) -> bool:
-        """Load the filament into the hotend.
-
-        The MMU3 push the filament of 20mm and the extruder gear try to insert
-        it into the nozzle if the filament is not detected by the IR, call
-        RETRY_LOAD_FILAMENT_TO_HOTEND 5 times.
-
-        Call PAUSE_MMU if the filament is not detected by the IR sensor.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.load_filament_to_hotend()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_retry_unload_filament_from_hotend(self, gcmd: GCodeCommand) -> bool:
-        """Retry unload, try correct misalignment of bondtech gear.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.retry_unload_filament_from_hotend()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_unload_filament_from_hotend(self, gcmd: GCodeCommand) -> bool:
-        """Unload the filament from the nozzle (without RAMMING !!!).
-
-        Retract the filament from the nozzle to the out of the extruder gear.
-        Call PAUSE_MMU if the IR sensor detects the filament after the ejection
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.unload_filament_from_hotend()
-
-    @auto_pause
-    @track_operation(OperationKind.EJECT)
-    @auto_disable_steppers
-    def cmd_eject_ramming(self, gcmd: GCodeCommand) -> bool:
-        """Eject the filament with ramming from the extruder nozzle to the MMU3.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.eject_ramming()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_unload_filament_from_hotend_with_ramming(self, gcmd: GCodeCommand) -> bool:
-        """Unload from hotend with ramming.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.unload_filament_from_hotend_with_ramming()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_load_filament_to_finda(self, gcmd: GCodeCommand) -> bool:
-        """Load filament until the FINDA detect it.
-
-        Then push it 10mm more to be sure is well detected.
-        PAUSE_MMU is called if the FINDA does not detect the filament
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.load_filament_to_finda()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_load_filament_from_finda_to_extruder(self, gcmd: GCodeCommand) -> bool:
-        """Load from the FINDA to the extruder gear.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.load_filament_from_finda_to_extruder()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_load_filament_to_extruder(self, gcmd: GCodeCommand) -> bool:
-        """Load from MMU3 to extruder gear by calling LOAD_FILAMENT_TO_FINDA.
-
-        Then LOAD_FILAMENT_FROM_FINDA_TO_EXTRUDER.
-        PAUSE_MMU is called if the FINDA does not detect the filament.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.load_filament_to_extruder()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_unload_filament_from_finda(self, gcmd: GCodeCommand) -> bool:
-        """Unload filament until the FINDA detect it.
-
-        Then push it -10mm more to be sure is well not detected.
-        PAUSE_MMU is called if the FINDA does detect the filament.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.unload_filament_from_finda()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_unload_filament_from_extruder_to_finda(self, gcmd: GCodeCommand) -> bool:
-        """Unload from extruder gear to the FINDA.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.unload_filament_from_extruder_to_finda()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_unload_filament_from_extruder(self, gcmd: GCodeCommand) -> bool:
-        """Unload from the extruder gear to the MMU3.
-
-        Do it by calling UNLOAD_FILAMENT_FROM_EXTRUDER_TO_FINDA and
-        then UNLOAD_FILAMENT_FROM_FINDA
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.unload_filament_from_extruder()
-
-    @auto_pause
     @track_operation(OperationKind.UNLOAD)
     @auto_disable_steppers
     def cmd_m702(self, gcmd: GCodeCommand) -> bool:
@@ -4192,35 +3907,6 @@ class MMU3:
             self.current_filament = None
         self.display_status_msg("M702 ok ...")
         return True
-
-    @auto_pause
-    @track_operation(OperationKind.EJECT)
-    @auto_disable_steppers
-    def cmd_eject_from_extruder(self, gcmd: GCodeCommand) -> bool:
-        """Preheat the heater if needed and unload the filament with ramming.
-
-        Eject from nozzle to extruder gear out.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.eject_from_extruder()
-
-    @auto_pause
-    @auto_disable_steppers
-    def cmd_eject_before_home(self, gcmd: GCodeCommand) -> bool:
-        """Eject from extruder gear to MMU3.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-
-        Returns:
-            bool: True if command completed successfully, False otherwise.
-        """
-        return self.eject_before_home()
 
     @auto_pause
     @measure_duration
@@ -4262,22 +3948,17 @@ class MMU3:
 
     @auto_pause
     @auto_disable_steppers
-    def cmd_preload_filament_to_finda(
-        self, gcmd: GCodeCommand, filament_id: None | int = None
-    ) -> bool:
-        """Preload filament to finda.
+    def cmd_preload_filament_to_finda(self, gcmd: GCodeCommand, gate: int) -> bool:
+        """Preload the filament of a gate to FINDA and back.
 
         Args:
             gcmd (GCodeCommand): The G-Code command.
-            filament_id (None | int): The filament to preload, read from
-                ``VALUE=`` if None, -1 preloads all.
+            gate (int): The gate to preload.
 
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        if filament_id is None:
-            filament_id = gcmd.get_int("VALUE", -1)
-        return self.pre_load_filament_to_finda(filament_id)
+        return self.pre_load_filament_to_finda(gate)
 
     def cmd_mmu_enable(self, gcmd: GCodeCommand) -> bool:
         """Enable or disable the MMU3.
