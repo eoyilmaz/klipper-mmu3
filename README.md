@@ -287,6 +287,23 @@ The extension supplies all the necessary gcode commands.
    MMU_GATE_MAP RESET=1          ; clear all gates
    ```
 
+14. `MMU ENABLE=0|1`
+
+   Enables (`MMU ENABLE=1`) or disables (`MMU ENABLE=0`) the MMU. Disabling also
+   turns off the MMU motors. Without `ENABLE=` it prints whether the MMU is
+   enabled.
+
+15. `MMU_STATUS`
+
+   Prints a summary of the MMU state: enabled / homed / paused, the selected
+   and loaded gates, the filament position, the current action, the pending
+   (failed) operation and the gate map.
+
+16. `MMU_HELP`
+
+   Lists the MMU commands with a one-line description each. Klipper's `HELP`
+   shows the same descriptions.
+
 > [!NOTE]
 >
 > The following commands were renamed to match Happy Hare's naming, which the
@@ -301,6 +318,8 @@ The extension supplies all the necessary gcode commands.
 > | `UT`            | `MMU_UNLOAD`   |
 > | `SELECT_TOOL`   | `MMU_SELECT`   |
 > | `UNSELECT_TOOL` | `MMU_UNSELECT` |
+> | `MMU_ENABLE`    | `MMU ENABLE=1` |
+> | `MMU_DISABLE`   | `MMU ENABLE=0` |
 
 The following is the list of all the commands available, most of them are
 internally used and will be removed in the future as they are not supplying any
@@ -317,13 +336,13 @@ design.
    K3  ; Not supported with MMU3-12x
    K4  ; Not supported with MMU3-12x
    M702
+   MMU
    MMU_CHANGE_TOOL
    MMU_CHECK_GATE
    MMU_CHECK_GATES
-   MMU_DISABLE
    MMU_EJECT
-   MMU_ENABLE
    MMU_GATE_MAP
+   MMU_HELP
    MMU_HOME
    MMU_LOAD
    MMU_MOTORS_OFF
@@ -333,6 +352,7 @@ design.
    MMU_SELECT
    MMU_STATS
    MMU_STATS_RESET_JOB
+   MMU_STATUS
    MMU_UNLOAD
    MMU_UNLOCK
    MMU_UNSELECT

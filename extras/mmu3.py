@@ -1270,45 +1270,121 @@ class MMU3:
         self.respond_info(msg)
         self.gcode.run_script_from_command(f"M117 {msg}")
 
+    def command_table(self) -> list[tuple[str, Callable, str]]:
+        """Return the MMU3 commands with a one-line description each.
+
+        The descriptions show up in Klipper's ``HELP`` and in ``MMU_HELP``.
+        The per tool ``Tn`` / ``Kn`` commands, the deprecated aliases and the
+        unsupported Happy Hare commands are not in the table.
+
+        Returns:
+            list[tuple[str, Callable, str]]: (name, handler, description).
+        """
+        return [
+            ("MMU", self.cmd_mmu, "Enable / disable the MMU (ENABLE=0|1)"),
+            ("MMU_HELP", self.cmd_mmu_help, "List the MMU commands"),
+            ("MMU_STATUS", self.cmd_mmu_status, "Print a summary of the MMU state"),
+            ("MMU_HOME", self.cmd_home_mmu, "Home the idler and the selector"),
+            ("HOME_IDLER", self.cmd_home_idler, "Home the idler only"),
+            ("MMU_SELECT", self.cmd_mmu_select, "Select a gate (GATE= / TOOL=)"),
+            ("MMU_UNSELECT", self.cmd_unselect_tool, "Park the idler"),
+            (
+                "MMU_CHANGE_TOOL",
+                self.cmd_mmu_change_tool,
+                "Change to a tool (TOOL= / GATE=), same as Tn",
+            ),
+            (
+                "MMU_LOAD",
+                self.cmd_mmu_load,
+                "Load the filament of a gate (GATE= / TOOL=) to the nozzle",
+            ),
+            (
+                "MMU_UNLOAD",
+                self.cmd_mmu_unload,
+                "Unload the filament from the nozzle to the MMU",
+            ),
+            (
+                "MMU_EJECT",
+                self.cmd_mmu_eject,
+                "Unload the filament and park the idler",
+            ),
+            (
+                "MMU_PRELOAD",
+                self.cmd_mmu_preload,
+                "Feed the filament of a gate to FINDA and back",
+            ),
+            (
+                "MMU_CHECK_GATE",
+                self.cmd_mmu_check_gate,
+                "Check the selected (or given) gates for filament",
+            ),
+            (
+                "MMU_CHECK_GATES",
+                self.cmd_mmu_check_gates,
+                "Check all (or the given) gates for filament",
+            ),
+            (
+                "MMU_GATE_MAP",
+                self.cmd_mmu_gate_map,
+                "Show or edit the filament metadata of the gates",
+            ),
+            (
+                "MMU_UNLOCK",
+                self.cmd_unlock,
+                "Park the idler so the filament can be moved by hand",
+            ),
+            (
+                "MMU_RETRY",
+                self.cmd_mmu_retry,
+                "Retry the operation that failed and paused the MMU",
+            ),
+            ("MMU_RECOVER", self.cmd_mmu_recover, "Recover the MMU state"),
+            ("PAUSE_MMU", self.cmd_pause, "Pause the MMU and the print"),
+            (
+                "RESUME_MMU",
+                self.cmd_resume,
+                "Retry the failed operation and resume the print (FORCE=1)",
+            ),
+            ("MMU_MOTORS_OFF", self.cmd_motors_off, "Turn off the MMU motors"),
+            (
+                "MMU_STATS",
+                self.cmd_mmu_stats,
+                "Print the lifetime and current job statistics",
+            ),
+            (
+                "MMU_STATS_RESET_JOB",
+                self.cmd_mmu_stats_reset_job,
+                "Reset the current job statistics",
+            ),
+            (
+                "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE",
+                self.cmd_calibrate_pulley_rotation_distance,
+                "Calibrate the pulley rotation_distance",
+            ),
+            (
+                "MMU_CALIBRATE_BOWDEN_LENGTH",
+                self.cmd_calibrate_bowden_load_length,
+                "Detect bowden_load_length1 using the filament switch sensor",
+            ),
+            (
+                "ENDSTOPS_STATUS",
+                self.cmd_endstops_status,
+                "Print the state of the MMU endstops",
+            ),
+            ("GET_MMU_PARAM", self.cmd_get_mmu_param, "Print an MMU parameter"),
+            ("SET_MMU_PARAM", self.cmd_set_mmu_param, "Set an MMU parameter"),
+            ("M702", self.cmd_m702, "Unload the filament"),
+        ]
+
     def register_commands(self) -> None:
         """Register new GCode commands."""
-        self.gcode.register_command("MMU_ENABLE", self.cmd_mmu_enable)
-        self.gcode.register_command("MMU_DISABLE", self.cmd_mmu_disable)
-        self.gcode.register_command(
-            "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE",
-            self.cmd_calibrate_pulley_rotation_distance,
-        )
-        self.gcode.register_command(
-            "MMU_CALIBRATE_BOWDEN_LENGTH", self.cmd_calibrate_bowden_load_length
-        )
-        self.gcode.register_command("GET_MMU_PARAM", self.cmd_get_mmu_param)
-        self.gcode.register_command("SET_MMU_PARAM", self.cmd_set_mmu_param)
-        self.gcode.register_command("ENDSTOPS_STATUS", self.cmd_endstops_status)
-        self.gcode.register_command("HOME_IDLER", self.cmd_home_idler)
-        self.gcode.register_command("MMU_HOME", self.cmd_home_mmu)
-        self.gcode.register_command("PAUSE_MMU", self.cmd_pause)
-        self.gcode.register_command("RESUME_MMU", self.cmd_resume)
-        self.gcode.register_command("MMU_RETRY", self.cmd_mmu_retry)
-        self.gcode.register_command("MMU_STATS", self.cmd_mmu_stats)
-        self.gcode.register_command("MMU_STATS_RESET_JOB", self.cmd_mmu_stats_reset_job)
+        for name, handler, desc in self.command_table():
+            self.gcode.register_command(name, handler, desc=desc)
 
         for i in range(self.number_of_tools):
             self.gcode.register_command(f"T{i}", partial(self.cmd_tx, tool_id=i))
             self.gcode.register_command(f"K{i}", partial(self.cmd_kx, tool_id=i))
 
-        self.gcode.register_command("MMU_UNLOCK", self.cmd_unlock)
-        self.gcode.register_command("MMU_LOAD", self.cmd_mmu_load)
-        self.gcode.register_command("MMU_UNLOAD", self.cmd_mmu_unload)
-        self.gcode.register_command("MMU_EJECT", self.cmd_mmu_eject)
-        self.gcode.register_command("MMU_SELECT", self.cmd_mmu_select)
-        self.gcode.register_command("MMU_UNSELECT", self.cmd_unselect_tool)
-        self.gcode.register_command("MMU_MOTORS_OFF", self.cmd_motors_off)
-        self.gcode.register_command("MMU_GATE_MAP", self.cmd_mmu_gate_map)
-        self.gcode.register_command("MMU_CHANGE_TOOL", self.cmd_mmu_change_tool)
-        self.gcode.register_command("MMU_PRELOAD", self.cmd_mmu_preload)
-        self.gcode.register_command("MMU_RECOVER", self.cmd_mmu_recover)
-        self.gcode.register_command("MMU_CHECK_GATE", self.cmd_mmu_check_gate)
-        self.gcode.register_command("MMU_CHECK_GATES", self.cmd_mmu_check_gates)
         # Happy Hare commands without an MMU3 equivalent
         for name in (
             "MMU_TTG_MAP",
@@ -1322,7 +1398,6 @@ class MMU3:
             self.gcode.register_command(
                 name, partial(self.cmd_not_supported, name=name)
             )
-        self.gcode.register_command("M702", self.cmd_m702)
 
         # the pre Happy Hare naming, kept working for existing slicer G-code
         # and macros
@@ -1333,6 +1408,8 @@ class MMU3:
             ("UT", "MMU_UNLOAD", self.cmd_mmu_unload),
             ("SELECT_TOOL", "MMU_SELECT", self.cmd_mmu_select),
             ("UNSELECT_TOOL", "MMU_UNSELECT", self.cmd_unselect_tool),
+            ("MMU_ENABLE", "MMU ENABLE=1", self.cmd_mmu_enable),
+            ("MMU_DISABLE", "MMU ENABLE=0", self.cmd_mmu_disable),
         ):
             self.gcode.register_command(
                 old_name,
@@ -3960,8 +4037,27 @@ class MMU3:
         """
         return self.pre_load_filament_to_finda(gate)
 
+    def cmd_mmu(self, gcmd: GCodeCommand) -> bool:
+        """Enable (``ENABLE=1``) or disable (``ENABLE=0``) the MMU3.
+
+        Without ``ENABLE=`` print whether the MMU3 is enabled.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        enable = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
+        if enable is None:
+            self.respond_info(f"MMU is {'enabled' if self.is_enabled else 'disabled'}.")
+            return True
+        if enable:
+            return self.cmd_mmu_enable(gcmd)
+        return self.cmd_mmu_disable(gcmd)
+
     def cmd_mmu_enable(self, gcmd: GCodeCommand) -> bool:
-        """Enable or disable the MMU3.
+        """Enable the MMU3, ``MMU ENABLE=1``.
 
         Args:
             gcmd (GCodeCommand): The G-Code command.
@@ -3974,7 +4070,7 @@ class MMU3:
         return True
 
     def cmd_mmu_disable(self, gcmd: GCodeCommand) -> bool:
-        """Disable the MMU3.
+        """Disable the MMU3, ``MMU ENABLE=0``.
 
         Args:
             gcmd (GCodeCommand): The G-Code command.
@@ -3986,6 +4082,61 @@ class MMU3:
         # also disable steppers
         self.disable_steppers()
         self.display_status_msg("MMU Disabled")
+        return True
+
+    def cmd_mmu_help(self, gcmd: GCodeCommand) -> bool:
+        """List the MMU3 commands with a one-line description each.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+
+        Returns:
+            bool: Always True.
+        """
+        table = self.command_table()
+        last_tool = self.number_of_tools - 1
+        tool_commands = [
+            (f"T0 - T{last_tool}", "Change to the tool"),
+            (f"K0 - K{last_tool}", "Cut the filament of the tool in the MMU"),
+        ]
+        rows = [(name, desc) for name, _, desc in table] + tool_commands
+        lines = ["MMU commands:"]
+        # same layout as Klipper's HELP
+        lines += [f"{name:<10}: {desc}" for name, desc in rows]
+        self.respond_info("\n".join(lines))
+        return True
+
+    def cmd_mmu_status(self, gcmd: GCodeCommand) -> bool:
+        """Print a one-shot, human readable summary of the MMU3 state.
+
+        Only reports the tracked state, it does not query the sensors.
+
+        Args:
+            gcmd (GCodeCommand): The G-Code command.
+
+        Returns:
+            bool: Always True.
+        """
+
+        def tool_text(tool: None | int) -> str:
+            return "none" if tool is None else f"T{tool}"
+
+        lines = [
+            "MMU status:",
+            f"Enabled: {'yes' if self.is_enabled else 'no'}",
+            f"Homed: {'yes' if self.is_homed else 'no'}",
+            f"Paused: {'yes' if self.is_paused else 'no'}",
+            f"Selected gate: {tool_text(self.current_tool)}",
+            f"Loaded gate: {tool_text(self.current_filament)}",
+            f"Filament position: {self.filament_pos.name}",
+            f"Action: {self.action}",
+        ]
+        if self.pending_operation is not None:
+            lines.append(f"Pending operation: {self.pending_operation.describe()}")
+        else:
+            lines.append("Pending operation: none")
+        self.respond_info("\n".join(lines))
+        self.print_gate_map()
         return True
 
     def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
