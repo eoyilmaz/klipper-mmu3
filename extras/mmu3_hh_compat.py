@@ -23,6 +23,7 @@ TOOL_GATE_UNKNOWN = -1
 FILAMENT_POS_UNKNOWN = -1
 FILAMENT_POS_UNLOADED = 0
 FILAMENT_POS_HOMED_GATE = 1
+FILAMENT_POS_IN_BOWDEN = 3
 FILAMENT_POS_HOMED_ENTRY = 5
 FILAMENT_POS_EXTRUDER_ENTRY = 7
 FILAMENT_POS_IN_EXTRUDER = 9
@@ -108,9 +109,14 @@ class MmuStatus:
     def filament_pos(self) -> int:
         """Return the filament position as a Happy Hare ``FILAMENT_POS_*`` value.
 
+        While the filament moves between FINDA and the extruder it is in the
+        bowden, the panel then draws it at ``bowden_progress``.
+
         Returns:
             int: The filament position.
         """
+        if self.mmu3.filament_tracker.is_bowden_move:
+            return FILAMENT_POS_IN_BOWDEN
         name = self.mmu3.filament_pos.name
         if name == "AT_EXTRUDER":
             # homed at the extruder entry sensor, or sitting in the gears
@@ -193,14 +199,14 @@ class MmuStatus:
 
         FINDA is the gate sensor. It is not queried here - querying an MCU
         endstop pauses the reactor, which ``get_status`` must never do - the
-        tracked filament position (kept in sync with FINDA by
-        ``assess_filament_pos``) is reported instead.
+        state the MCU reports on every change of the FINDA pin is reported
+        instead.
 
         Returns:
             dict: Happy Hare sensor name -> triggered.
         """
         mmu3 = self.mmu3
-        sensors = {"mmu_gate": mmu3.filament_pos.name != "UNLOADED"}
+        sensors = {"mmu_gate": mmu3.finda_triggered}
         if mmu3.filament_switch_sensor is not None:
             sensors[self.switch_sensor_key] = bool(
                 mmu3.filament_switch_sensor.get_status(None)["filament_detected"]
@@ -288,9 +294,9 @@ class MmuStatus:
             "action": mmu3.action,
             "filament": self.filament(),
             "filament_pos": self.filament_pos(),
-            "filament_position": 0.0,
+            "filament_position": round(mmu3.filament_tracker.position(eventtime), 1),
             "filament_direction": self.filament_direction(),
-            "bowden_progress": -1,
+            "bowden_progress": mmu3.filament_tracker.bowden_progress(eventtime),
             "reason_for_pause": (
                 mmu3.pending_operation.describe()
                 if mmu3.pending_operation is not None

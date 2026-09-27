@@ -178,33 +178,25 @@ The extension supplies all the necessary gcode commands.
 
    Homes the idler only.
 
-4. `HOME_MMU_ONLY`
+4. `MMU_SELECT` / `MMU_UNSELECT`
 
-   Homes the idler and selector, and tries to load the filament 0 to FINDA to
-   verify everything is working fine and unloads it. Very rarely used...
-
-5. `MMU_SELECT` / `MMU_UNSELECT`
-
-   Selects the requested gate (`GATE=` or `VALUE=`), or parks the idler:
+   Selects the requested gate (`GATE=`, `TOOL=` or `VALUE=`), or parks the
+   idler:
 
    ```gcode
    MMU_SELECT GATE=0
    ```
 
-6. `LOAD_FILAMENT_TO_FINDA` / `UNLOAD_FILAMENT_FROM_FINDA`
+   Tools are gates on the MMU3, so `TOOL=0` is the same as `GATE=0`. Giving
+   both with different values is an error. This applies to all commands that
+   take a gate.
 
-   Loads/Unloads the filament to FINDA.
-
-7. `LOAD_FILAMENT_TO_EXTRUDER` / `UNLOAD_FILAMENT_FROM_EXTRUDER`
-
-   Loads/Unloads the filament from extruder.
-
-8. `MMU_UNLOCK`
+5. `MMU_UNLOCK`
 
    Unlocks the MMU by moving the idler to the home position. Mostly needed when
    you need to pull/push the filament manually.
 
-9. `MMU_RETRY`
+6. `MMU_RETRY`
 
    Retries the load/unload operation that failed and left the MMU paused. The
    MMU remembers what it was doing (which `Tx`, load or unload) and how far it
@@ -213,19 +205,19 @@ The extension supplies all the necessary gcode commands.
    the whole sequence over. `printer["mmu3 MMU3"].pending_operation` and
    `.filament_pos` report the current recovery state.
 
-10. `RESUME_MMU` / `RESUME_MMU FORCE=1`
+7. `RESUME_MMU` / `RESUME_MMU FORCE=1`
 
    `RESUME_MMU` runs `MMU_RETRY` first and only resumes the print if the
    recovery succeeds. `RESUME_MMU FORCE=1` clears the pending operation and
    resumes anyway - use it when you have already fixed the filament by hand.
 
-11. `CUT_FILAMENT_IN_EXTRUDER`
+8. `CUT_FILAMENT_IN_EXTRUDER`
 
    This macro is defined in the `mmu3.cfg` and controls the movement required
    to cut the filament inside the extruder. This is called by the `Tx` commands
    if the `enable_filament_cutter` is set to `True`.
 
-12. `PULLEY_CALIBRATE`
+9. `PULLEY_CALIBRATE`
 
    This command is used to calibrate the pulley `rotation_distance` value. The
    process works like this:
@@ -244,11 +236,11 @@ The extension supplies all the necessary gcode commands.
    - Adjust the `rotation_distance` value of the `pulley_stepper` in your
      `mmu3.cfg` file by `{current_value} * {measured_distance} / 100`.
 
-13. `MMU_STATS` / `MMU_STATS_RESET_JOB`
+10. `MMU_STATS` / `MMU_STATS_RESET_JOB`
 
    `MMU_STATS` prints a summary of the operation statistics tracked for
-   every top level MMU operation (tool changes, loads, unloads, homes, cuts
-   and ejects): how many times each was attempted, how many failed, and a
+   every top level MMU operation (tool changes, loads, unloads, homes and
+   cuts): how many times each was attempted, how many failed, and a
    tally of successful tool changes by from/to tool. Two independent sets
    are tracked and also exposed as `printer["mmu3 MMU3"].total_stats` /
    `.job_stats`:
@@ -267,19 +259,19 @@ The extension supplies all the necessary gcode commands.
    Stats` and `Print Full Report` (runs `MMU_STATS`, useful when the display
    is too small to show everything, e.g. the per-tool toolchange tally).
 
-14. `MMU_LOAD` / `MMU_UNLOAD` / `MMU_EJECT`
+11. `MMU_LOAD` / `MMU_UNLOAD` / `MMU_EJECT`
 
-   `MMU_LOAD` loads the filament of a gate to the nozzle (`MMU_LOAD GATE=2`,
-   without `GATE=` the selected gate is loaded). `MMU_UNLOAD` unloads the
+   `MMU_LOAD` loads the filament of a gate to the nozzle (`MMU_LOAD GATE=2`
+   or `MMU_LOAD TOOL=2`, without a gate the selected gate is loaded). `MMU_UNLOAD` unloads the
    filament from the nozzle back to the MMU. `MMU_EJECT` does the same and also
    parks the idler, so the filament can be pulled out by hand (same as
    `M702`).
 
-15. `MMU_MOTORS_OFF`
+12. `MMU_MOTORS_OFF`
 
    Turns off the MMU stepper motors.
 
-16. `MMU_GATE_MAP`
+13. `MMU_GATE_MAP`
 
    Shows or edits what is loaded in each gate. This is normally done from the
    Mainsail / Fluidd MMU panel (see
@@ -295,11 +287,50 @@ The extension supplies all the necessary gcode commands.
    MMU_GATE_MAP RESET=1          ; clear all gates
    ```
 
+   A gate is marked empty when loading it to FINDA fails. To also mark it
+   empty when the spool runs out during a print, add `MMU_RUNOUT` to the
+   `runout_gcode` of your filament switch sensor (Klipper has no runout event
+   the MMU could listen to):
+
+   ```ini
+   [filament_switch_sensor my_filament_sensor]
+   switch_pin: ...
+   pause_on_runout: False
+   runout_gcode:
+     MMU_RUNOUT
+     PAUSE
+   ```
+
+   Klipper only runs `runout_gcode` while printing, and the MMU turns the
+   sensor off while it loads or unloads, so tool changes never mark a gate
+   empty. `MMU_RUNOUT` also does nothing when the MMU is busy or no filament
+   is loaded. If FINDA still detects filament, the filament broke or got stuck
+   between FINDA and the sensor rather than running out, so the gate is not
+   marked empty (this is common with a `pre_gears` sensor).
+
+14. `MMU ENABLE=0|1`
+
+   Enables (`MMU ENABLE=1`) or disables (`MMU ENABLE=0`) the MMU. Disabling also
+   turns off the MMU motors. Without `ENABLE=` it prints whether the MMU is
+   enabled.
+
+15. `MMU_STATUS`
+
+   Prints a summary of the MMU state: enabled / homed / paused, the selected
+   and loaded gates, the filament position, the current action, the pending
+   (failed) operation and the gate map.
+
+16. `MMU_HELP`
+
+   Lists the MMU commands with a one-line description each. Klipper's `HELP`
+   shows the same descriptions.
+
 > [!NOTE]
 >
 > The following commands were renamed to match Happy Hare's naming, which the
 > Mainsail / Fluidd MMU panels use. The old names still work but print a
-> deprecation warning, please update your slicer G-code and macros:
+> deprecation warning, and will be removed in the next release. Please update
+> your slicer G-code and macros:
 >
 > | Old             | New            |
 > |-----------------|----------------|
@@ -309,6 +340,8 @@ The extension supplies all the necessary gcode commands.
 > | `UT`            | `MMU_UNLOAD`   |
 > | `SELECT_TOOL`   | `MMU_SELECT`   |
 > | `UNSELECT_TOOL` | `MMU_UNSELECT` |
+> | `MMU_ENABLE`    | `MMU ENABLE=1` |
+> | `MMU_DISABLE`   | `MMU ENABLE=0` |
 
 The following is the list of all the commands available, most of them are
 internally used and will be removed in the future as they are not supplying any
@@ -316,47 +349,39 @@ user facing functionality, but are residues from the previous GCode Macro based
 design.
 
    ```gcode
-   EJECT_BEFORE_HOME
-   EJECT_FROM_EXTRUDER
-   EJECT_RAMMING
    ENDSTOPS_STATUS
    GET_MMU_PARAM
    HOME_IDLER
-   HOME_MMU_ONLY
    K0  ; Not supported with MMU3-12x
    K1  ; Not supported with MMU3-12x
    K2  ; Not supported with MMU3-12x
    K3  ; Not supported with MMU3-12x
    K4  ; Not supported with MMU3-12x
-   LOAD_FILAMENT_FROM_FINDA_TO_EXTRUDER
-   LOAD_FILAMENT_TO_EXTRUDER
-   LOAD_FILAMENT_TO_FINDA
-   LOAD_FILAMENT_TO_FINDA_IN_LOOP
-   LOAD_FILAMENT_TO_HOTEND
    M702
-   MMU_CHANGE_TOOL  ; only with enable_mmu_panel
-   MMU_DISABLE
+   MMU
+   MMU_CHANGE_TOOL
+   MMU_CHECK_GATE
+   MMU_CHECK_GATES
    MMU_EJECT
-   MMU_ENABLE
-   MMU_GATE_MAP     ; only with enable_mmu_panel
+   MMU_GATE_MAP
+   MMU_HELP
    MMU_HOME
    MMU_LOAD
    MMU_MOTORS_OFF
-   MMU_PRELOAD      ; only with enable_mmu_panel
-   MMU_RECOVER      ; only with enable_mmu_panel
+   MMU_PRELOAD
+   MMU_RECOVER
    MMU_RETRY
+   MMU_RUNOUT
    MMU_SELECT
    MMU_STATS
    MMU_STATS_RESET_JOB
+   MMU_STATUS
    MMU_UNLOAD
    MMU_UNLOCK
    MMU_UNSELECT
    PAUSE_MMU
-   PRE_LOAD_FILAMENT_TO_FINDA
    PULLEY_CALIBRATE
    RESUME_MMU
-   RETRY_LOAD_FILAMENT_TO_HOTEND
-   RETRY_UNLOAD_FILAMENT_FROM_HOTEND
    SET_MMU_PARAM
    T0
    T1
@@ -370,11 +395,6 @@ design.
    T9
    T10
    T11
-   UNLOAD_FILAMENT_FROM_EXTRUDER
-   UNLOAD_FILAMENT_FROM_EXTRUDER_TO_FINDA
-   UNLOAD_FILAMENT_FROM_FINDA
-   UNLOAD_FILAMENT_FROM_HOTEND
-   UNLOAD_FILAMENT_FROM_HOTEND_WITH_RAMMING
    ```
 
 ## Mainsail / Fluidd MMU Panel & Spoolman
@@ -396,16 +416,22 @@ The panel shows:
   ...),
 - the reason when the MMU paused itself.
 
-It also has buttons to select, load, unload, eject, preload (check) a gate,
-home, unlock and recover the MMU. Clicking a gate's filament opens the gate
+It also has buttons to select, load, unload, eject, preload a gate, check one
+or all gates for filament, home, unlock and recover the MMU. Clicking a gate's filament opens the gate
 editor, where you can set the filament name, material, color and temperature,
 or pick a Spoolman spool.
 
-This is enabled by default and can be turned off in `[mmu3 MMU3]`:
+`MMU_CHECK_GATE` checks the selected gate and `MMU_CHECK_GATES` checks all
+gates. Each gate's filament is fed to FINDA and back, and the gate is marked
+available or empty. An empty gate doesn't pause the MMU, the check moves on to
+the next gate. Both commands accept Happy Hare's `GATE=`, `GATES=0,2,3`,
+`TOOL=`, `TOOLS=`, `ALL=1` and `QUIET=1`, and are refused while filament is
+loaded.
+
+The panel support is always on. Spoolman support is set in `[mmu3 MMU3]`:
 
 ```ini
 [mmu3 MMU3]
-enable_mmu_panel: True
 spoolman_support: readonly  # off, readonly
 ```
 
@@ -439,6 +465,20 @@ it from the previous one. The gate to spool mapping is stored in Klipper
 
 The MMU3 always loads gate `n` for tool `n`. The following Happy Hare features
 aren't available, and their buttons only print a "not supported" message:
-tool-to-gate remapping, endless spool, bypass, gate checking
-(`MMU_CHECK_GATE`), gear motor sync, and loading or unloading the extruder
-only.
+tool-to-gate remapping, endless spool, bypass, gear motor sync, and loading
+or unloading the extruder only.
+The panel's "T macro color" setting isn't supported either, the MMU3's `Tn`
+commands aren't macros.
+
+### Known differences
+
+The panels read some Happy Hare settings from its `[mmu]` config section. The
+MMU3's section is `[mmu3 MMU3]`, so the panels use their defaults for these:
+
+- `gate_homing_endstop`: Happy Hare's name for FINDA is `mmu_gate`, but the
+  panels don't know FINDA is the gate homing sensor. When the filament is
+  parked at FINDA, the panel draws it slightly past the gate, and doesn't
+  highlight FINDA as the sensor it stopped at.
+- `extruder_homing_endstop`: with the filament switch sensor at `pre_gears` or
+  `on_gears`, Mainsail ends the bowden bar a little past the extruder sensor.
+  When the filament reaches the sensor it is drawn at the right place.

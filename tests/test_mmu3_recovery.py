@@ -109,7 +109,6 @@ def test_operation_describe_includes_error() -> None:
         (OperationKind.LOAD, 0, FilamentPos.LOADED),
         (OperationKind.TOOL_CHANGE, None, FilamentPos.UNLOADED),
         (OperationKind.UNLOAD, None, FilamentPos.UNLOADED),
-        (OperationKind.EJECT, None, FilamentPos.UNLOADED),
         (OperationKind.HOME, None, FilamentPos.UNLOADED),
     ],
 )

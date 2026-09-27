@@ -22,6 +22,7 @@ sys.modules.setdefault(
 from extras.mmu3 import (  # noqa: E402
     MMU3,
     FilamentPos,
+    FilamentTracker,
     FilamentSwitchSensorPosition,
     Operation,
     OperationKind,
@@ -82,6 +83,7 @@ def make_mmu(num_tools: int = 5) -> MMU3:
     mmu.current_tool = None
     mmu.current_filament = None
     mmu.filament_pos = FilamentPos.UNLOADED
+    mmu.finda_triggered = False
     mmu.current_operation = None
     mmu.pending_operation = None
     mmu.job_stats = OperationStats()
@@ -90,6 +92,10 @@ def make_mmu(num_tools: int = 5) -> MMU3:
     mmu.filament_switch_sensor = None
     mmu.filament_switch_sensor_position = FilamentSwitchSensorPosition.PreGears
     mmu.enable_no_selector_mode = False
+    mmu.bowden_load_length1 = 450
+    mmu.bowden_load_length3 = 20
+    mmu.extra_load_length = 30
+    mmu.filament_tracker = FilamentTracker(mmu)
     return mmu
 
 
@@ -317,11 +323,122 @@ def test_num_toolchanges_counts_successful_ones() -> None:
 # ---------------------------------------------------------------------------
 # sensors
 # ---------------------------------------------------------------------------
-def test_gate_sensor_follows_filament_pos() -> None:
+@pytest.mark.parametrize(
+    ("pos", "triggered"),
+    [
+        (FilamentPos.UNLOADED, True),
+        (FilamentPos.AT_FINDA, False),
+    ],
+)
+def test_gate_sensor_reports_finda_not_filament_pos(pos, triggered) -> None:
     mmu = make_mmu()
-    assert MmuStatus(mmu).sensors() == {"mmu_gate": False}
-    mmu.filament_pos = FilamentPos.AT_FINDA
+    mmu.filament_pos = pos
+    mmu.finda_triggered = triggered
+    assert MmuStatus(mmu).sensors() == {"mmu_gate": triggered}
+
+
+class FakePins:
+    """A ``pins`` stand-in recording the pins allowed to be shared."""
+
+    def __init__(self) -> None:
+        self.multi_use_pins = []
+
+    def allow_multi_use_pin(self, pin_desc):
+        # like Klipper, the chip name is whatever is before the ":", so a
+        # ^ ~ ! modifier ends up in it and fails the chip lookup
+        chip_name = pin_desc.split(":", 1)[0].strip()
+        if chip_name not in ("mcu", "mmboard"):
+            raise ValueError(f"Unknown pin chip name '{chip_name}'")
+        self.multi_use_pins.append(pin_desc)
+
+
+class FakeButtons:
+    """A ``buttons`` stand-in recording the registered pins."""
+
+    def __init__(self) -> None:
+        self.registered = []
+
+    def register_buttons(self, pins, callback):
+        self.registered.append((pins, callback))
+
+
+class FakePrinter:
+    """A ``printer`` stand-in serving the ``pins`` and ``buttons`` objects."""
+
+    def __init__(self) -> None:
+        self.pins = FakePins()
+        self.buttons = FakeButtons()
+
+    def lookup_object(self, name):
+        assert name == "pins"
+        return self.pins
+
+    def load_object(self, config, name):
+        assert name == "buttons"
+        return self.buttons
+
+
+class FakeConfig:
+    """A config stand-in with the pulley stepper's section."""
+
+    def __init__(self, sections: dict) -> None:
+        self.sections = sections
+
+    def getsection(self, name):
+        return FakeConfig(self.sections[name])
+
+    def get(self, option):
+        return self.sections[option]
+
+
+@pytest.mark.parametrize(
+    "pin",
+    ["mmboard:PC15", "^mmboard:PC15", "~!mmboard:PC15", " ^ ! mmboard:PC15"],
+)
+def test_setup_finda_sensor_shares_the_pulley_endstop_pin(pin) -> None:
+    mmu = make_mmu()
+    mmu.printer = FakePrinter()
+    config = FakeConfig({"manual_stepper pulley_stepper": {"endstop_pin": pin}})
+    mmu.setup_finda_sensor(config)
+    # the bare pin is shared, the buttons get the modifiers (e.g. the pullup)
+    assert mmu.printer.pins.multi_use_pins == ["mmboard:PC15"]
+    assert mmu.printer.buttons.registered == [([pin], mmu._handle_finda_state)]
+
+
+def test_finda_state_follows_the_mcu_reports() -> None:
+    mmu = make_mmu()
+    mmu._handle_finda_state(0.0, 1)
     assert MmuStatus(mmu).sensors() == {"mmu_gate": True}
+    # e.g. the filament was removed by hand
+    mmu._handle_finda_state(1.0, 0)
+    assert MmuStatus(mmu).sensors() == {"mmu_gate": False}
+
+
+class FakeEndstop:
+    """A FINDA endstop stand-in returning a fixed reading."""
+
+    def __init__(self, triggered: int) -> None:
+        self.triggered = triggered
+
+    def query_endstop(self, print_time):
+        return self.triggered
+
+
+class FakeToolhead:
+    """A ``toolhead`` stand-in."""
+
+    def get_last_move_time(self):
+        return 0.0
+
+
+@pytest.mark.parametrize("triggered", [0, 1])
+def test_is_filament_in_finda_caches_the_reading(triggered) -> None:
+    mmu = make_mmu()
+    mmu.toolhead = FakeToolhead()
+    mmu.pulley_stepper_endstop = FakeEndstop(triggered)
+    assert mmu.is_filament_in_finda() is bool(triggered)
+    assert mmu.finda_triggered is bool(triggered)
+    assert MmuStatus(mmu).sensors() == {"mmu_gate": bool(triggered)}
 
 
 @pytest.mark.parametrize(
