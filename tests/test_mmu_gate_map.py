@@ -4,7 +4,7 @@
 import pytest
 
 # Local Imports
-from extras.mmu3_gate_map import (
+from extras.mmu_gate_map import (
     DEFAULT_SPEED_OVERRIDE,
     GATE_AVAILABLE,
     GATE_EMPTY,

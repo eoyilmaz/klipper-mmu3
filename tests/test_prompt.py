@@ -4,7 +4,7 @@
 import pytest
 
 # Local Imports
-from extras.mmu3_mainsail_prompts import Button, ButtonGroup, Color, FooterButton, Prompt
+from extras.mmu_mainsail_prompts import Button, ButtonGroup, Color, FooterButton, Prompt
 
 
 @pytest.mark.parametrize(

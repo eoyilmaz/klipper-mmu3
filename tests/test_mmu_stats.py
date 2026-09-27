@@ -20,8 +20,10 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    GATE_MAP_VARIABLE,
+    MMU,
+    TOTAL_STATS_VARIABLE,
     Operation,
     OperationKind,
     OperationStats,
@@ -29,9 +31,9 @@ from extras.mmu3 import (  # noqa: E402
 )
 
 
-def make_mmu() -> MMU3:
+def make_mmu() -> MMU:
     """Build a bare MMU3 instance, enough for track_operation to run."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.current_filament = None
     mmu.current_operation = None
     mmu.pending_operation = None
@@ -39,7 +41,7 @@ def make_mmu() -> MMU3:
     mmu.job_stats = OperationStats()
     mmu.save_calls = 0
     mmu.save_total_stats = lambda: setattr(mmu, "save_calls", mmu.save_calls + 1)
-    mmu._pending_operation_resolved = MMU3._pending_operation_resolved.__get__(mmu)
+    mmu._pending_operation_resolved = MMU._pending_operation_resolved.__get__(mmu)
     return mmu
 
 
@@ -202,3 +204,39 @@ def test_track_operation_a_broken_save_total_stats_does_not_break_the_command() 
         return True
 
     assert cmd_home(mmu, None) is True
+
+
+# ---------------------------------------------------------------------------
+# save_variables
+# ---------------------------------------------------------------------------
+def make_saved_mmu(variables: dict) -> MMU:
+    """Build a bare MMU3 instance with the given saved variables."""
+    mmu = object.__new__(MMU)
+    mmu.save_variables = types.SimpleNamespace(allVariables=variables)
+    return mmu
+
+
+def test_load_variable_reads_the_saved_value() -> None:
+    mmu = make_saved_mmu({"mmu_total_stats": {"attempts": {"home": 1}}})
+    assert mmu.load_variable(TOTAL_STATS_VARIABLE) == {"attempts": {"home": 1}}
+
+
+@pytest.mark.parametrize(
+    ("name", "legacy_name"),
+    [
+        (TOTAL_STATS_VARIABLE, "mmu3_total_stats"),
+        (GATE_MAP_VARIABLE, "mmu3_gate_map"),
+    ],
+)
+def test_load_variable_falls_back_to_the_legacy_name(name, legacy_name) -> None:
+    mmu = make_saved_mmu({legacy_name: {"old": 1}})
+    assert mmu.load_variable(name) == {"old": 1}
+
+
+def test_load_variable_prefers_the_new_name() -> None:
+    mmu = make_saved_mmu({"mmu_gate_map": {"new": 1}, "mmu3_gate_map": {"old": 1}})
+    assert mmu.load_variable(GATE_MAP_VARIABLE) == {"new": 1}
+
+
+def test_load_variable_defaults_to_an_empty_dict() -> None:
+    assert make_saved_mmu({}).load_variable(GATE_MAP_VARIABLE) == {}

@@ -67,19 +67,20 @@ For manual installation follow these steps:
 2. Link the source files:
 
    ```shell
+   ln -sf ./extras/mmu.py ~/klipper/klippy/extras/
    ln -sf ./extras/mmu3.py ~/klipper/klippy/extras/
-   ln -sf ./extras/mmu3_mainsail_prompts.py ~/klipper/klippy/extras/
-   ln -sf ./extras/mmu3_gate_map.py ~/klipper/klippy/extras/
-   ln -sf ./extras/mmu3_hh_compat.py ~/klipper/klippy/extras/
+   ln -sf ./extras/mmu_mainsail_prompts.py ~/klipper/klippy/extras/
+   ln -sf ./extras/mmu_gate_map.py ~/klipper/klippy/extras/
+   ln -sf ./extras/mmu_hh_compat.py ~/klipper/klippy/extras/
    ```
 
 3. Copy/link the config files:
 
    ```shell
    cd klipper-mmu3
-   cp ~/klipper-mmu3/mmu3.cfg ~/printer_data/config/
-   cp ~/klipper-mmu3/mmu3-12x.cfg ~/printer_data/config/
-   ln -sf ~/klipper-mmu3/mmu3_menus.cfg ~/printer_data/config/
+   cp ~/klipper-mmu3/mmu.cfg ~/printer_data/config/
+   cp ~/klipper-mmu3/mmu-12x.cfg ~/printer_data/config/
+   ln -sf ~/klipper-mmu3/mmu_menus.cfg ~/printer_data/config/
    ln -sf ~/klipper-mmu3/beep.cfg ~/printer_data/config/
    ```
 
@@ -87,14 +88,14 @@ For manual installation follow these steps:
 
    ```ini
    [respond]
-   [include mmu3.cfg]
+   [include mmu.cfg]
    ```
 
    or for MMU3-12x setup use:
 
    ```ini
    [respond]
-   [include mmu3-12x.cfg]
+   [include mmu-12x.cfg]
    ```
 
 5. You can also optionally add an update section to `moonraker` for subsequent
@@ -111,14 +112,36 @@ updates via `Fluidd` / `Mainsail` update managers.
 
 ### Post Installation (both automatic and manual installation)
 
-Update `mmu3.cfg`/`mmu3-12x.cfg` according to your setup.
+> [!IMPORTANT]
+>
+> The config section was renamed from `[mmu3 MMU3]` to Happy Hare's `[mmu]`,
+> and the extension is now reported as `printer.mmu` instead of
+> `printer["mmu3 MMU3"]`. The files lost their MMU3 names too: `mmu3.cfg` /
+> `mmu3-12x.cfg` / `mmu3-12x-ng.cfg` are now `mmu.cfg` / `mmu-12x.cfg` /
+> `mmu-12x-ng.cfg`, `mmu3_menus.cfg` is `mmu_menus.cfg`, and the Klipper
+> modules are `extras/mmu*.py`. When updating from an older version:
+>
+> 1. Run `./install.sh` again. It links the new modules, installs `mmu.cfg` /
+>    `mmu-12x.cfg` and replaces the `[include mmu3*.cfg]` in your
+>    `printer.cfg` with it. Your old `mmu3*.cfg` file is left untouched.
+> 2. Copy your settings from the old `mmu3*.cfg` file to the new one.
+> 3. Replace `printer["mmu3 MMU3"]` / `printer['mmu3 MMU3']` with `printer.mmu`
+>    in your own macros. `printer.mmu.filament_pos` is now Happy Hare's
+>    number, the MMU3 position name moved to `printer.mmu.filament_pos_name`.
+>
+> The lifetime statistics and the gate map are saved as `mmu_total_stats` /
+> `mmu_gate_map` now, the old `mmu3_*` values are read until the new ones are
+> saved. Klipper refuses to start with a leftover `[mmu3 MMU3]` section and
+> prints these steps.
+
+Update `mmu.cfg`/`mmu-12x.cfg` according to your setup.
 
 Specifically update the `filament_switch_sensor_name`,
 `filament_switch_sensor_position` and `filament_motion_sensor_name` parameters
 to match your printer config.
 
    ```ini
-   [mmu3 MMU3]
+   [mmu]
    filament_switch_sensor_name: filament_switch_sensor my_filament_sensor
    filament_switch_sensor_position: on_gears  # pre_gears, post_gears
    filament_motion_sensor_name: filament_motion_sensor encoder_sensor
@@ -139,7 +162,7 @@ to survive a restart, also add a `[save_variables]` section to your
 
    ```ini
    [save_variables]
-   filename: ~/printer_data/config/mmu3_variables.cfg
+   filename: ~/printer_data/config/mmu_variables.cfg
    ```
 
 This is optional - without it, MMU3 still works, it just keeps the lifetime
@@ -202,8 +225,8 @@ The extension supplies all the necessary gcode commands.
    MMU remembers what it was doing (which `Tx`, load or unload) and how far it
    got, so you don't have to - `MMU_RETRY` re-checks the FINDA / switch / motion
    sensors and resumes from where the filament actually is instead of starting
-   the whole sequence over. `printer["mmu3 MMU3"].pending_operation` and
-   `.filament_pos` report the current recovery state.
+   the whole sequence over. `printer.mmu.pending_operation` and
+   `.filament_pos_name` report the current recovery state.
 
 7. `RESUME_MMU` / `RESUME_MMU FORCE=1`
 
@@ -213,7 +236,7 @@ The extension supplies all the necessary gcode commands.
 
 8. `CUT_FILAMENT_IN_EXTRUDER`
 
-   This macro is defined in the `mmu3.cfg` and controls the movement required
+   This macro is defined in the `mmu.cfg` and controls the movement required
    to cut the filament inside the extruder. This is called by the `Tx` commands
    if the `enable_filament_cutter` is set to `True`.
 
@@ -234,7 +257,7 @@ The extension supplies all the necessary gcode commands.
    - Unload the tool (`MMU_UNLOAD`).
    - Pull the filament out and measure the distance between the marks.
    - Adjust the `rotation_distance` value of the `pulley_stepper` in your
-     `mmu3.cfg` file by `{current_value} * {measured_distance} / 100`.
+     `mmu.cfg` file by `{current_value} * {measured_distance} / 100`.
 
 10. `MMU_STATS` / `MMU_STATS_RESET_JOB`
 
@@ -242,7 +265,7 @@ The extension supplies all the necessary gcode commands.
    every top level MMU operation (tool changes, loads, unloads, homes and
    cuts): how many times each was attempted, how many failed, and a
    tally of successful tool changes by from/to tool. Two independent sets
-   are tracked and also exposed as `printer["mmu3 MMU3"].total_stats` /
+   are tracked and also exposed as `printer.mmu.total_stats` /
    `.job_stats`:
 
    - `total_stats` - lifetime totals for the printer. These are persisted
@@ -427,10 +450,10 @@ the next gate. Both commands accept Happy Hare's `GATE=`, `GATES=0,2,3`,
 `TOOL=`, `TOOLS=`, `ALL=1` and `QUIET=1`, and are refused while filament is
 loaded.
 
-The panel support is always on. Spoolman support is set in `[mmu3 MMU3]`:
+The panel support is always on. Spoolman support is set in `[mmu]`:
 
 ```ini
-[mmu3 MMU3]
+[mmu]
 spoolman_support: readonly  # off, readonly
 ```
 
@@ -471,8 +494,8 @@ commands aren't macros.
 
 ### Known differences
 
-The panels read some Happy Hare settings from its `[mmu]` config section. The
-MMU3's section is `[mmu3 MMU3]`, so the panels use their defaults for these:
+The panels read some Happy Hare settings from the `[mmu]` config section. The
+MMU3 doesn't set these, so the panels use their defaults:
 
 - `gate_homing_endstop`: Happy Hare's name for FINDA is `mmu_gate`, but the
   panels don't know FINDA is the gate homing sensor. When the filament is

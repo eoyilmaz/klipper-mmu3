@@ -16,22 +16,22 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import MMU3, FilamentPos  # noqa: E402
-from extras.mmu3_gate_map import (  # noqa: E402
+from extras.mmu import MMU, FilamentPos  # noqa: E402
+from extras.mmu_gate_map import (  # noqa: E402
     GATE_AVAILABLE,
     GATE_EMPTY,
     GateMap,
 )
-from extras.mmu3_hh_compat import ACTION_IDLE, ACTION_UNLOADING  # noqa: E402
+from extras.mmu_hh_compat import ACTION_IDLE, ACTION_UNLOADING  # noqa: E402
 
 
 class FakeGCmd:
     """A ``GCodeCommand`` stand-in, ``MMU_RUNOUT`` takes no parameters."""
 
 
-def make_mmu(num_tools: int = 5, finda: bool = False) -> MMU3:
+def make_mmu(num_tools: int = 5, finda: bool = False) -> MMU:
     """Build a bare MMU3 with gate 2 loaded and available."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
     mmu.gate_map.update(2, status=GATE_AVAILABLE)
@@ -134,7 +134,7 @@ def test_m702_turns_off_the_runout_sensors_while_unloading() -> None:
     mmu.unload_tool = unload_tool
     mmu.unselect_tool = lambda: True
     # skip the pause / stats / stepper decorators
-    m702 = inspect.unwrap(MMU3.cmd_m702)
+    m702 = inspect.unwrap(MMU.cmd_m702)
     assert m702(mmu, FakeGCmd()) is True
     assert states == [(False, False)]
     assert mmu.filament_switch_sensor.runout_helper.sensor_enabled is True

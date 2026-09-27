@@ -30,10 +30,10 @@ is where the tool / gate split becomes necessary.
 
 ## Phase 0 — Done (#45)
 
-- [x] `mmu` and `mmu_machine` status objects in Happy Hare's shape (`extras/mmu3_hh_compat.py`).
+- [x] `mmu` and `mmu_machine` status objects in Happy Hare's shape (`extras/mmu_hh_compat.py`).
 - [x] Live `action` reporting (Selecting, Loading, Loading Ext, Unloading, Forming Tip, Cutting
   Tip, Heating, Homing, ...).
-- [x] Per-gate filament map persisted with `save_variables` (`extras/mmu3_gate_map.py`,
+- [x] Per-gate filament map persisted with `save_variables` (`extras/mmu_gate_map.py`,
   `MMU_GATE_MAP`).
 - [x] Spoolman `readonly` mode: Moonraker's active spool follows the loaded gate.
 - [x] Happy Hare command names: `MMU_LOAD`, `MMU_UNLOAD`, `MMU_EJECT`, `MMU_HOME`, `MMU_UNLOCK`,
@@ -85,20 +85,24 @@ Small, low-risk items that make the panel and existing commands more complete.
   - `t_macro_color`: the setting sends `MMU_TEST_CONFIG`, now answered with "not supported".
   - `gate_homing_endstop` should be `mmu_gate` (FINDA), and `extruder_homing_endstop` `extruder`
     with a `pre_gears` / `on_gears` switch sensor. The defaults are documented in the README as known
-    differences until [#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71) makes the section
-    `[mmu]`.
+    differences, the section is `[mmu]` since [#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)
+    so they can be reported now.
 - [ ] **Verify Fluidd.** ([#56](https://github.com/eoyilmaz/klipper-mmu3/issues/56)) Only Mainsail
   was tested on hardware. Check that Fluidd's MMU card renders and its buttons send commands we
   handle.
 - [x] **Remove the deprecated aliases** ([#57](https://github.com/eoyilmaz/klipper-mmu3/issues/57))
   (`LT`, `UT`, `HOME_MMU`, `UNLOCK_MMU`, `SELECT_TOOL`, `UNSELECT_TOOL`, `MMU_ENABLE`,
   `MMU_DISABLE`). Announced in the 1.4.0 release notes, the old names are now unknown commands.
-- [ ] **Rename `[mmu3 MMU3]` to Happy Hare's `[mmu]`.**
-  ([#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)) Rename `extras/mmu3.py` to
-  `extras/mmu.py` and `MMU3` to `MMU`, and make the extension itself the `printer.mmu` object
-  instead of adding a separate `MmuStatus`. Breaking change: a leftover `[mmu3 MMU3]` section must
-  fail with a message explaining the rename, and `install.sh` must remove the old link.
-  Afterwards, report `gate_homing_endstop: mmu_gate` and the `extruder_homing_endstop` matching
+- [x] **Rename `[mmu3 MMU3]` to Happy Hare's `[mmu]`.**
+  ([#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)) `extras/mmu3.py` is now
+  `extras/mmu.py` and `MMU3` is `MMU`, the extension itself is the `printer.mmu` object (with the
+  MMU3 specific fields next to Happy Hare's, the MMU3 position name is `filament_pos_name`).
+  The other files dropped the MMU3 name too (`mmu.cfg`, `mmu-12x.cfg`, `mmu_menus.cfg`,
+  `extras/mmu_*.py`, `mmu_*` save variables, with the old `mmu3_*` values still read). Breaking
+  change: `extras/mmu3.py` and `mmu3_menus.cfg` are kept as stubs so an old config stops Klipper
+  with the migration steps, `install.sh` replaces the old `[include mmu3*.cfg]` and refuses to
+  install next to Happy Hare.
+  Still open: report `gate_homing_endstop: mmu_gate` and the `extruder_homing_endstop` matching
   `filament_switch_sensor_position` in `configfile.settings.mmu`, so the panels stop using their
   defaults (see [#55](https://github.com/eoyilmaz/klipper-mmu3/issues/55)).
 

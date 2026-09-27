@@ -21,18 +21,18 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    MMU,
     FilamentPos,
     FilamentTracker,
     tracks_filament,
 )
-from extras.mmu3_hh_compat import (  # noqa: E402
+from extras.mmu_hh_compat import (  # noqa: E402
     FILAMENT_POS_HOMED_GATE,
     FILAMENT_POS_IN_BOWDEN,
     MmuStatus,
 )
-from tests.test_mmu3_hh_status import make_mmu  # noqa: E402
+from tests.test_mmu_hh_status import make_mmu  # noqa: E402
 
 STEP_DIST = 0.01  # mm per step
 
@@ -84,7 +84,7 @@ class FakeToolhead:
         pass
 
 
-def make_tracked_mmu() -> MMU3:
+def make_tracked_mmu() -> MMU:
     mmu = make_mmu()
     mmu.pulley_stepper = FakePulley()
     mmu.toolhead = FakeToolhead()
@@ -95,7 +95,7 @@ def steps(mm: float) -> int:
     return round(mm / STEP_DIST)
 
 
-def status(mmu: MMU3, eventtime: float = 0.0) -> dict:
+def status(mmu: MMU, eventtime: float = 0.0) -> dict:
     return MmuStatus(mmu).get_status(eventtime)
 
 

@@ -20,8 +20,8 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    MMU,
     FilamentPos,
     FilamentSwitchSensorPosition,
     Operation,
@@ -29,9 +29,9 @@ from extras.mmu3 import (  # noqa: E402
 )
 
 
-def make_mmu() -> MMU3:
+def make_mmu() -> MMU:
     """Build a bare MMU3 instance without running __init__ or touching Klipper."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.is_paused = False
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.current_tool = None
@@ -206,8 +206,8 @@ def assess_mmu(
     sensor_position: FilamentSwitchSensorPosition = (
         FilamentSwitchSensorPosition.OnGears
     ),
-) -> MMU3:
-    mmu = object.__new__(MMU3)
+) -> MMU:
+    mmu = object.__new__(MMU)
     mmu.filament_pos = tracked
     mmu.current_tool = 1
     mmu.current_filament = 1

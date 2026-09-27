@@ -15,14 +15,14 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import MMU3, FilamentPos  # noqa: E402
-from extras.mmu3_gate_map import (  # noqa: E402
+from extras.mmu import MMU, FilamentPos  # noqa: E402
+from extras.mmu_gate_map import (  # noqa: E402
     GATE_AVAILABLE,
     GATE_EMPTY,
     GATE_UNKNOWN,
     GateMap,
 )
-from extras.mmu3_hh_compat import ACTION_CHECKING, ACTION_IDLE  # noqa: E402
+from extras.mmu_hh_compat import ACTION_CHECKING, ACTION_IDLE  # noqa: E402
 
 
 class CommandError(Exception):
@@ -60,9 +60,9 @@ class FakePrinter:
     command_error = CommandError
 
 
-def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU3:
+def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
     """Build a bare MMU3 whose moves only record what was done."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.printer = FakePrinter()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
