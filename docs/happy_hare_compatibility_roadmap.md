@@ -90,9 +90,9 @@ Small, low-risk items that make the panel and existing commands more complete.
 - [ ] **Verify Fluidd.** ([#56](https://github.com/eoyilmaz/klipper-mmu3/issues/56)) Only Mainsail
   was tested on hardware. Check that Fluidd's MMU card renders and its buttons send commands we
   handle.
-- [ ] **Remove the deprecated aliases** ([#57](https://github.com/eoyilmaz/klipper-mmu3/issues/57))
-  (`LT`, `UT`, `HOME_MMU`, `UNLOCK_MMU`, `SELECT_TOOL`, `UNSELECT_TOOL`) in a later release, after
-  announcing it in the release notes.
+- [x] **Remove the deprecated aliases** ([#57](https://github.com/eoyilmaz/klipper-mmu3/issues/57))
+  (`LT`, `UT`, `HOME_MMU`, `UNLOCK_MMU`, `SELECT_TOOL`, `UNSELECT_TOOL`, `MMU_ENABLE`,
+  `MMU_DISABLE`). Announced in the 1.4.0 release notes, the old names are now unknown commands.
 - [ ] **Rename `[mmu3 MMU3]` to Happy Hare's `[mmu]`.**
   ([#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)) Rename `extras/mmu3.py` to
   `extras/mmu.py` and `MMU3` to `MMU`, and make the extension itself the `printer.mmu` object

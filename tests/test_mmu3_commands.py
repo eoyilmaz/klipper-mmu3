@@ -139,18 +139,22 @@ def test_mmu_rejects_invalid_enable(value) -> None:
 
 
 @pytest.mark.parametrize(
-    ("old_name", "new_name", "enabled"),
-    [("MMU_ENABLE", "MMU ENABLE=1", True), ("MMU_DISABLE", "MMU ENABLE=0", False)],
+    "old_name",
+    [
+        "LT",
+        "UT",
+        "HOME_MMU",
+        "UNLOCK_MMU",
+        "SELECT_TOOL",
+        "UNSELECT_TOOL",
+        "MMU_ENABLE",
+        "MMU_DISABLE",
+    ],
 )
-def test_old_enable_commands_still_work_with_a_warning(
-    old_name, new_name, enabled
-) -> None:
+def test_old_command_names_are_removed(old_name) -> None:
     mmu = make_mmu()
-    mmu.is_enabled = not enabled
     mmu.register_commands()
-    assert mmu.gcode.handlers[old_name](FakeGCmd()) is True
-    assert mmu.is_enabled is enabled
-    assert mmu.messages[0] == f"{old_name} is deprecated, use {new_name} instead."
+    assert old_name not in mmu.gcode.handlers
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +165,8 @@ def test_register_commands_gives_the_commands_a_description() -> None:
     mmu.register_commands()
     for name in ("MMU", "MMU_HELP", "MMU_STATUS", "MMU_HOME", "M702"):
         assert mmu.gcode.help[name]
-    # aliases and unsupported commands stay out of Klipper's HELP
-    for name in ("MMU_ENABLE", "MMU_DISABLE", "HOME_MMU", "MMU_TTG_MAP"):
+    # unsupported commands stay out of Klipper's HELP
+    for name in ("MMU_TTG_MAP", "MMU_TEST_CONFIG"):
         assert name in mmu.gcode.handlers
         assert name not in mmu.gcode.help
 
