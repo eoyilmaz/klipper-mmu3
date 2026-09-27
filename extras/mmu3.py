@@ -1592,6 +1592,9 @@ class MMU3:
             "MMU_SPOOLMAN",
             "MMU_SYNC_GEAR_MOTOR",
             "MMU_MOTORS_ON",
+            # the panels' "T macro color" setting, the MMU3's T commands are
+            # not macros
+            "MMU_TEST_CONFIG",
         ):
             self.gcode.register_command(
                 name, partial(self.cmd_not_supported, name=name)

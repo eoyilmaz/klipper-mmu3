@@ -167,6 +167,14 @@ def test_register_commands_gives_the_commands_a_description() -> None:
         assert name not in mmu.gcode.help
 
 
+def test_panel_t_macro_color_setting_is_not_supported() -> None:
+    mmu = make_mmu()
+    mmu.register_commands()
+    handler = mmu.gcode.handlers["MMU_TEST_CONFIG"]
+    assert handler(FakeGCmd(QUIET=1, t_macro_color="gatemap")) is True
+    assert mmu.messages == ["MMU_TEST_CONFIG is not supported on MMU3."]
+
+
 def test_mmu_help_lists_the_commands() -> None:
     mmu = make_mmu(num_tools=5)
     assert mmu.cmd_mmu_help(FakeGCmd()) is True

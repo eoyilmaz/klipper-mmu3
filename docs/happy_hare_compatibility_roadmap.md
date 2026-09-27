@@ -76,9 +76,17 @@ Small, low-risk items that make the panel and existing commands more complete.
   ([#54](https://github.com/eoyilmaz/klipper-mmu3/issues/54)) The MMU3 already supports a
   `filament_motion_sensor`; expose it as `clog_detection_enabled` and in `sensors`, so the panel
   shows it.
-- [ ] **Fill `_MMU_SOFTWARE_VARS` with real values**
-  ([#55](https://github.com/eoyilmaz/klipper-mmu3/issues/55)) where Mainsail reads them, instead of
-  the stub.
+- [x] **Check the Happy Hare settings the panels read.**
+  ([#55](https://github.com/eoyilmaz/klipper-mmu3/issues/55)) `_MMU_SOFTWARE_VARS` only needs
+  `automap_strategy`, and `"none"` is correct (no slicer tool automapping). From Happy Hare's
+  `[mmu]` section (`configfile.settings.mmu` / `configfile.config.mmu`):
+  - `extruder_force_homing` (default `0`) is correct.
+  - `status_leds` is only read for `mmu_leds` objects, which the MMU3 does not have.
+  - `t_macro_color`: the setting sends `MMU_TEST_CONFIG`, now answered with "not supported".
+  - `gate_homing_endstop` should be `mmu_gate` (FINDA), and `extruder_homing_endstop` `extruder`
+    with a `pre_gears` / `on_gears` switch sensor. The defaults are documented in the README as known
+    differences until [#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71) makes the section
+    `[mmu]`.
 - [ ] **Verify Fluidd.** ([#56](https://github.com/eoyilmaz/klipper-mmu3/issues/56)) Only Mainsail
   was tested on hardware. Check that Fluidd's MMU card renders and its buttons send commands we
   handle.
@@ -90,6 +98,9 @@ Small, low-risk items that make the panel and existing commands more complete.
   `extras/mmu.py` and `MMU3` to `MMU`, and make the extension itself the `printer.mmu` object
   instead of adding a separate `MmuStatus`. Breaking change: a leftover `[mmu3 MMU3]` section must
   fail with a message explaining the rename, and `install.sh` must remove the old link.
+  Afterwards, report `gate_homing_endstop: mmu_gate` and the `extruder_homing_endstop` matching
+  `filament_switch_sensor_position` in `configfile.settings.mmu`, so the panels stop using their
+  defaults (see [#55](https://github.com/eoyilmaz/klipper-mmu3/issues/55)).
 
 ## Phase 2 — Print Lifecycle and Macros
 
