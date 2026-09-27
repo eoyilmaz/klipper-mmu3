@@ -67,9 +67,11 @@ Small, low-risk items that make the panel and existing commands more complete.
   ([#52](https://github.com/eoyilmaz/klipper-mmu3/issues/52)) It was derived from `filament_pos`
   because `get_status()` must not query MCU endstops. The FINDA pin is now shared with a button
   watcher, so the MCU reports every change (also when the filament is removed by hand).
-- [ ] **Clear gate status on runout / failed load.**
+- [x] **Clear gate status on runout / failed load.**
   ([#53](https://github.com/eoyilmaz/klipper-mmu3/issues/53)) Mark the gate `EMPTY` when the
   filament switch sensor reports runout during a print, not only when loading to FINDA fails.
+  Klipper has no runout event, so `MMU_RUNOUT` is added to the sensor's `runout_gcode`. A runout
+  with filament still in FINDA (broken or stuck in the bowden) does not mark the gate empty.
 - [ ] **Show the filament motion sensor as a clog / runout sensor.**
   ([#54](https://github.com/eoyilmaz/klipper-mmu3/issues/54)) The MMU3 already supports a
   `filament_motion_sensor`; expose it as `clog_detection_enabled` and in `sensors`, so the panel
