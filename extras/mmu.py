@@ -17,14 +17,14 @@ from typing import TYPE_CHECKING, Callable
 from extras.manual_stepper import ManualStepper
 
 # Local Imports
-from extras.mmu3_gate_map import (
+from extras.mmu_gate_map import (
     GATE_AVAILABLE,
     GATE_EMPTY,
     GATE_UNKNOWN,
     NO_SPOOL,
     GateMap,
 )
-from extras.mmu3_hh_compat import (
+from extras.mmu_hh_compat import (
     ACTION_CHECKING,
     ACTION_CUTTING_FILAMENT,
     ACTION_CUTTING_TIP,
@@ -43,7 +43,7 @@ from extras.mmu3_hh_compat import (
     MmuMachine,
     MmuStatus,
 )
-from extras.mmu3_mainsail_prompts import (
+from extras.mmu_mainsail_prompts import (
     Button,
     ButtonGroup,
     FooterButton,
@@ -91,8 +91,14 @@ STEPPER_NAME_MAP = {
 
 IS_DIGIT = re.compile(r"[0-9\-.]+")
 
-TOTAL_STATS_VARIABLE = "mmu3_total_stats"
-GATE_MAP_VARIABLE = "mmu3_gate_map"
+TOTAL_STATS_VARIABLE = "mmu_total_stats"
+GATE_MAP_VARIABLE = "mmu_gate_map"
+# the names before the [mmu3 MMU3] -> [mmu] rename, read when the new
+# variable isn't saved yet
+LEGACY_VARIABLES = {
+    TOTAL_STATS_VARIABLE: "mmu3_total_stats",
+    GATE_MAP_VARIABLE: "mmu3_gate_map",
+}
 
 GATE_STATUS_TEXT = {
     GATE_UNKNOWN: "unknown",
@@ -151,8 +157,8 @@ class OperationKind(enum.Enum):
 class Operation:
     """A record of the high level MMU operation currently in progress.
 
-    Held on ``MMU3.current_operation`` while a top level command runs and
-    promoted to ``MMU3.pending_operation`` by :func:`auto_pause` when the
+    Held on ``MMU.current_operation`` while a top level command runs and
+    promoted to ``MMU.pending_operation`` by :func:`auto_pause` when the
     command fails, so recovery (``MMU_RETRY`` / ``RESUME_MMU``) knows what the
     operator was trying to do without them having to remember it.
 
@@ -223,9 +229,9 @@ class Operation:
 class OperationStats:
     """Aggregate counters for :class:`Operation` runs.
 
-    Used for both the lifetime-of-the-printer totals (``MMU3.total_stats``,
+    Used for both the lifetime-of-the-printer totals (``MMU.total_stats``,
     persisted via ``save_variables``) and the current-job counters
-    (``MMU3.job_stats``, reset when a new print starts).
+    (``MMU.job_stats``, reset when a new print starts).
     """
 
     def __init__(self) -> None:
@@ -370,7 +376,7 @@ def measure_duration(f: Callable) -> Callable:
     """
 
     @wraps(f)
-    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+    def wrapped_f(self: MMU, gcmd: GCodeCommand, *args, **kwargs) -> None:
         start_time = time.time()
         result = f(self, gcmd, *args, **kwargs)
         duration = time.time() - start_time
@@ -406,7 +412,7 @@ def auto_pause(f: Callable) -> Callable:
 
     On failure, the recovery prompt is (re-)shown for the resulting
     ``pending_operation``. Of the recovery dialog's buttons (see
-    :meth:`MMU3.show_recovery_prompt`), only "Retry" and "Resume" close it
+    :meth:`MMU.show_recovery_prompt`), only "Retry" and "Resume" close it
     (via the ``PROMPT_CLOSE_AND_RUN_COMMAND`` macro sending
     ``action:prompt_end``); "Unlock MMU", "Unload Tool" and "Home MMU" run
     their gcode with the dialog left open server-side, so a *successful* run
@@ -423,7 +429,7 @@ def auto_pause(f: Callable) -> Callable:
     """
 
     @wraps(f)
-    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+    def wrapped_f(self: MMU, gcmd: GCodeCommand, *args, **kwargs) -> None:
         if not self.is_enabled:
             self.display_status_msg("MMU is not enabled!")
             return False
@@ -464,12 +470,12 @@ def track_operation(kind: OperationKind) -> Callable:
     still sees a populated ``current_operation`` to promote.
 
     ``pending_operation`` is only cleared here if this command's success
-    actually satisfies it (see :meth:`MMU3._pending_operation_resolved`).
+    actually satisfies it (see :meth:`MMU._pending_operation_resolved`).
     Recovery-dialog buttons (``MMU_UNLOCK``, ``MMU_UNLOAD``, ``MMU_HOME``, ...) are
     unrelated one-off commands from the operator's point of view - each is a
     diagnostic/manual-recovery step, not necessarily a completion of whatever
     originally failed, so a lone success here must not silently discard a
-    still-unfinished ``pending_operation``. Only :meth:`MMU3.retry_pending_operation`
+    still-unfinished ``pending_operation``. Only :meth:`MMU.retry_pending_operation`
     (``MMU_RETRY`` / ``RESUME_MMU``) and a forced resume actually clear it
     unconditionally.
 
@@ -482,7 +488,7 @@ def track_operation(kind: OperationKind) -> Callable:
 
     def decorator(f: Callable) -> Callable:
         @wraps(f)
-        def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+        def wrapped_f(self: MMU, gcmd: GCodeCommand, *args, **kwargs) -> None:
             to_tool = kwargs.get("tool_id")
             if to_tool is None and gcmd is not None:
                 with contextlib.suppress(Exception):
@@ -525,7 +531,7 @@ def track_operation(kind: OperationKind) -> Callable:
 def reports_action(action: str) -> Callable:
     """Decorator factory that reports ``action`` while the method runs.
 
-    See :meth:`MMU3.running_action`.
+    See :meth:`MMU.running_action`.
 
     Args:
         action (str): One of the Happy Hare ``ACTION_*`` strings.
@@ -536,7 +542,7 @@ def reports_action(action: str) -> Callable:
 
     def decorator(f: Callable) -> Callable:
         @wraps(f)
-        def wrapped_f(self: MMU3, *args, **kwargs) -> bool:
+        def wrapped_f(self: MMU, *args, **kwargs) -> bool:
             with self.running_action(action):
                 return f(self, *args, **kwargs)
 
@@ -559,7 +565,7 @@ def auto_disable_steppers(f: Callable) -> Callable:
     """
 
     @wraps(f)
-    def wrapped_f(self: MMU3, gcmd: GCodeCommand, *args, **kwargs) -> None:
+    def wrapped_f(self: MMU, gcmd: GCodeCommand, *args, **kwargs) -> None:
         try:
             result = f(self, gcmd, *args, **kwargs)
         finally:
@@ -788,18 +794,18 @@ class ExtruderSynchronizer:
     """Context manager to safely synchronize a manual stepper with the extruder.
 
     Args:
-        mmu3 (MMU3): The MMU3 instance.
+        mmu (MMU): The MMU instance.
         manual_stepper (ManualStepper): The stepper to synchronize with the extruder.
     """
 
-    def __init__(self, mmu3: MMU3, manual_stepper: ManualStepper) -> None:
-        self.mmu3 = mmu3
+    def __init__(self, mmu: MMU, manual_stepper: ManualStepper) -> None:
+        self.mmu = mmu
         self.manual_stepper = manual_stepper
         self.orig_trapq = None
 
     def __enter__(self) -> Self:
         """Enter the context."""
-        self.orig_trapq = self.mmu3.sync_stepper_to_extruder(self.manual_stepper)
+        self.orig_trapq = self.mmu.sync_stepper_to_extruder(self.manual_stepper)
         return self
 
     def __exit__(
@@ -813,7 +819,7 @@ class ExtruderSynchronizer:
         Ignore the exceptions, if any, Klipper will handle it.
         """
         if self.orig_trapq is not None:
-            self.mmu3.unsync_stepper_from_extruder(self.manual_stepper, self.orig_trapq)
+            self.mmu.unsync_stepper_from_extruder(self.manual_stepper, self.orig_trapq)
 
 
 class FilamentTracker:
@@ -831,11 +837,11 @@ class FilamentTracker:
     never query the MCU.
 
     Args:
-        mmu3 (MMU3): The MMU3 instance to track the filament of.
+        mmu (MMU): The MMU instance to track the filament of.
     """
 
-    def __init__(self, mmu3: MMU3) -> None:
-        self.mmu3 = mmu3
+    def __init__(self, mmu: MMU) -> None:
+        self.mmu = mmu
         # (filament_pos, mm) measured at the end of the last tracked step
         self._measured: None | tuple[FilamentPos, float] = None
         # (pulley steps, mm) at the start of the running step
@@ -855,7 +861,7 @@ class FilamentTracker:
     @property
     def bowden_length(self) -> float:
         """Return the nominal FINDA to extruder distance."""
-        return float(self.mmu3.bowden_load_length1)
+        return float(self.mmu.bowden_load_length1)
 
     def nominal_position(self, filament_pos: FilamentPos) -> float:
         """Return the nominal distance of a filament position from FINDA.
@@ -866,23 +872,23 @@ class FilamentTracker:
         Returns:
             float: The distance in mm.
         """
-        mmu3 = self.mmu3
+        mmu = self.mmu
         position = 0.0
         if filament_pos >= FilamentPos.AT_EXTRUDER:
-            position += mmu3.bowden_load_length1
+            position += mmu.bowden_load_length1
         if filament_pos >= FilamentPos.IN_HOTEND:
-            position += mmu3.bowden_load_length3
+            position += mmu.bowden_load_length3
         if filament_pos >= FilamentPos.LOADED:
-            position += mmu3.extra_load_length
+            position += mmu.extra_load_length
         return position
 
     def _pulley_mcu_stepper(self) -> MCU_stepper:
         """Return the pulley stepper's MCU stepper."""
-        return self.mmu3.pulley_stepper.get_steppers()[0]
+        return self.mmu.pulley_stepper.get_steppers()[0]
 
     def _queued_steps(self) -> int:
         """Return the pulley step count once every queued move completes."""
-        self.mmu3.toolhead.flush_step_generation()
+        self.mmu.toolhead.flush_step_generation()
         return self._pulley_mcu_stepper().get_mcu_position()
 
     def _moved(self, steps: int) -> float:
@@ -899,7 +905,7 @@ class FilamentTracker:
 
     def _stored_position(self) -> float:
         """Return the position when no step is tracked."""
-        filament_pos = self.mmu3.filament_pos
+        filament_pos = self.mmu.filament_pos
         if filament_pos <= FilamentPos.AT_FINDA:
             # FINDA is the origin, and what is before it is not known
             return 0.0
@@ -971,7 +977,7 @@ class FilamentTracker:
             yield
             _, start_position = self._start
             position = max(0.0, start_position + self._moved(self._queued_steps()))
-            self._measured = (self.mmu3.filament_pos, position)
+            self._measured = (self.mmu.filament_pos, position)
         finally:
             self._start = None
             self._is_bowden_move = False
@@ -992,7 +998,7 @@ def tracks_filament(is_bowden_move: bool = False) -> Callable:
 
     def decorator(f: Callable) -> Callable:
         @wraps(f)
-        def wrapped_f(self: MMU3, *args, **kwargs) -> bool:
+        def wrapped_f(self: MMU, *args, **kwargs) -> bool:
             with self.filament_tracker.track(is_bowden_move):
                 return f(self, *args, **kwargs)
 
@@ -1001,7 +1007,7 @@ def tracks_filament(is_bowden_move: bool = False) -> Callable:
     return decorator
 
 
-class MMU3:
+class MMU:
     """MMU3 class to manage the MMU3 multi-material unit.
 
     Args:
@@ -1079,12 +1085,15 @@ class MMU3:
 
         # per gate filament metadata, persisted via save_variables
         self.gate_map = GateMap(self.number_of_tools)
+        # the Happy Hare shaped part of get_status(), read by the Mainsail /
+        # Fluidd MMU panel
+        self.hh_status = MmuStatus(self)
         # the Mainsail / Fluidd MMU panel is always enabled now, the option is
         # still read so configs that set it keep working
         if config.get("enable_mmu_panel", None) is not None:
             logger.warning(
-                "mmu3: enable_mmu_panel is no longer used, the MMU panel is "
-                "always enabled. Remove it from [mmu3 MMU3]."
+                "mmu: enable_mmu_panel is no longer used, the MMU panel is "
+                "always enabled. Remove it from [mmu]."
             )
         # Spoolman
         self.spoolman_support = config.getchoice(
@@ -1129,7 +1138,7 @@ class MMU3:
         self.finda_unload_speed = config.getint("finda_unload_speed", 20)
         self.finda_load_accel = config.getint("finda_load_accel", 50)
         self.finda_unload_accel = config.getint("finda_unload_accel", 50)
-        # cut in mmu3
+        # cut in the MMU
         self.cut_filament_length = config.getfloat("cut_filament_length", 20)
         self.cutting_edge_retract = config.getfloat("cutting_edge_retract", 5)
         self.cut_stepper_current = config.getfloat("cut_stepper_current", 1.0)
@@ -1251,11 +1260,11 @@ class MMU3:
         self.save_variables = self.printer.lookup_object("save_variables", None)
         if self.save_variables is not None:
             self.total_stats = OperationStats.from_dict(
-                self.save_variables.allVariables.get(TOTAL_STATS_VARIABLE, {})
+                self.load_variable(TOTAL_STATS_VARIABLE)
             )
             self.gate_map = GateMap.from_dict(
                 self.number_of_tools,
-                self.save_variables.allVariables.get(GATE_MAP_VARIABLE, {}),
+                self.load_variable(GATE_MAP_VARIABLE),
             )
         else:
             self.respond_info(
@@ -1412,8 +1421,26 @@ class MMU3:
         with contextlib.suppress(Exception):
             self.sync_active_spool(quiet=True)
 
+    def load_variable(self, name: str) -> dict:
+        """Return a saved variable, falling back to its pre-rename name.
+
+        Args:
+            name (str): The variable name.
+
+        Returns:
+            dict: The saved value, or an empty dict if neither name is saved.
+        """
+        variables = self.save_variables.allVariables
+        if name in variables:
+            return variables[name]
+        return variables.get(LEGACY_VARIABLES.get(name), {})
+
     def get_status(self, event_time: float) -> dict:
-        """Return the status of the MMU3 for Klipper's template engine.
+        """Return the ``printer.mmu`` status.
+
+        The Happy Hare fields the Mainsail / Fluidd MMU panel reads (see
+        :class:`MmuStatus`), plus the MMU3 specific ones. ``filament_pos`` is
+        Happy Hare's integer, the MMU3 position name is ``filament_pos_name``.
 
         Args:
             event_time (float): The current event time.
@@ -1421,23 +1448,24 @@ class MMU3:
         Returns:
             dict: The status of the MMU3.
         """
-        return {
-            "is_enabled": self.is_enabled,
-            "is_homed": self.is_homed,
-            "is_paused": self.is_paused,
-            "current_tool": self.current_tool,
-            "current_filament": self.current_filament,
-            "filament_pos": self.filament_pos.name,
-            "action": self.action,
-            "pending_operation": (
-                self.pending_operation.describe()
-                if self.pending_operation is not None
-                else None
-            ),
-            "total_stats": self.total_stats.to_dict(),
-            "job_stats": self.job_stats.to_dict(),
-            "gate_map": self.gate_map.to_dict(),
-        }
+        status = self.hh_status.get_status(event_time)
+        status.update(
+            {
+                "is_enabled": self.is_enabled,
+                "current_tool": self.current_tool,
+                "current_filament": self.current_filament,
+                "filament_pos_name": self.filament_pos.name,
+                "pending_operation": (
+                    self.pending_operation.describe()
+                    if self.pending_operation is not None
+                    else None
+                ),
+                "total_stats": self.total_stats.to_dict(),
+                "job_stats": self.job_stats.to_dict(),
+                "gate_map": self.gate_map.to_dict(),
+            }
+        )
+        return status
 
     def respond_info(self, msg: str) -> None:
         """Respond info through the current GCodeCommand instance.
@@ -1603,17 +1631,11 @@ class MMU3:
     def register_mmu_panel(self) -> None:
         """Expose the MMU3 to the Mainsail / Fluidd MMU panel.
 
-        The panels look for Happy Hare's ``mmu`` / ``mmu_machine`` objects,
-        the Happy Hare commands they send are registered in
-        :meth:`register_commands`.
+        The panels look for Happy Hare's ``mmu`` / ``mmu_machine`` objects.
+        ``[mmu]`` makes this instance the ``mmu`` object (see
+        :meth:`get_status`), the Happy Hare commands the panels send are
+        registered in :meth:`register_commands`.
         """
-        if self.printer.lookup_object("mmu", None) is not None:
-            logger.warning(
-                "mmu3: an 'mmu' object already exists (Happy Hare?), "
-                "not registering the MMU3 panel support."
-            )
-            return
-        self.printer.add_object("mmu", MmuStatus(self))
         self.printer.add_object("mmu_machine", MmuMachine(self))
 
     def get_mapped_tool_id(self, tool_id: int) -> int:
@@ -2417,7 +2439,7 @@ class MMU3:
             "Loading Filament To Hotend (Native Trapq Sync Mode Retry)..."
         )
 
-        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+        with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
             length = self.bowden_load_length3
             speed = self.pulley_load_to_extruder_speed
             self.gcode.run_script_from_command(f"""
@@ -2447,7 +2469,7 @@ class MMU3:
 
         self.respond_debug("Loading Filament To Hotend (Native Trapq Sync Mode)...")
 
-        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+        with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
             length = self.bowden_load_length3
             speed = self.pulley_load_to_extruder_speed
             self.gcode.run_script_from_command(f"""
@@ -2526,7 +2548,7 @@ class MMU3:
             self.select_tool(self.current_filament)
 
         self.respond_debug("Unloading Filament...")
-        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+        with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
@@ -2566,7 +2588,7 @@ class MMU3:
             return False
 
         self.respond_debug("Unloading Filament...")
-        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+        with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
@@ -2728,7 +2750,7 @@ class MMU3:
 
         if needs_extruder_sync:
             sync_speed = min(self.bowden_load_speed1, self.extruder.max_e_velocity / 2)
-            with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+            with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
                 while total_moved < max_distance:
                     move_amount = min(step, max_distance - total_moved)
                     self.gcode.run_script_from_command(f"""
@@ -2929,7 +2951,7 @@ class MMU3:
             self.respond_debug(
                 "Filament not yet at extruder sensor, pushing incrementally ..."
             )
-            with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+            with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
                 for attempt in range(self.load_retry):
                     self.respond_debug(
                         f"Extruder sensor retry {attempt + 1}/{self.load_retry}"
@@ -2960,7 +2982,7 @@ class MMU3:
         # No sensor defined - fall back to original fixed distance behavior
         # so existing setups without a sensor continue to work unchanged.
         self.pulley_stepper.do_set_position(0)
-        with ExtruderSynchronizer(mmu3=self, manual_stepper=self.pulley_stepper):
+        with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
             self.gcode.run_script_from_command(f"""
                 G91
                 G92 E0
@@ -4443,25 +4465,13 @@ class MMU3:
         return True
 
 
-def load_config(config: ConfigWrapper) -> MMU3:
-    """Load the mmu3 config prefix.
+def load_config(config: ConfigWrapper) -> MMU:
+    """Load the [mmu] config section.
 
     Args:
         config (ConfigWrapper): The config wrapper.
 
     Returns:
-        MMU3: The MMU3 instance.
+        MMU: The MMU instance.
     """
-    return MMU3(config)
-
-
-def load_config_prefix(config: ConfigWrapper) -> MMU3:
-    """Load the mmu3 config prefix.
-
-    Args:
-        config (ConfigWrapper): The config wrapper.
-
-    Returns:
-        MMU3: The MMU3 instance.
-    """
-    return MMU3(config)
+    return MMU(config)

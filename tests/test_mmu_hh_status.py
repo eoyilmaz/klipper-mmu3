@@ -19,8 +19,8 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    MMU,
     FilamentPos,
     FilamentTracker,
     FilamentSwitchSensorPosition,
@@ -28,8 +28,8 @@ from extras.mmu3 import (  # noqa: E402
     OperationKind,
     OperationStats,
 )
-from extras.mmu3_gate_map import GateMap  # noqa: E402
-from extras.mmu3_hh_compat import (  # noqa: E402
+from extras.mmu_gate_map import GateMap  # noqa: E402
+from extras.mmu_hh_compat import (  # noqa: E402
     ACTION_CUTTING_FILAMENT,
     ACTION_FORMING_TIP,
     ACTION_IDLE,
@@ -71,9 +71,9 @@ class FakeSwitchSensor:
         return {"filament_detected": self.detected}
 
 
-def make_mmu(num_tools: int = 5) -> MMU3:
+def make_mmu(num_tools: int = 5) -> MMU:
     """Build a bare MMU3 instance with just what the status objects read."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
     mmu.is_enabled = True
@@ -473,3 +473,65 @@ def test_mmu_machine_no_selector_mode() -> None:
     mmu.enable_no_selector_mode = True
     unit = MmuMachine(mmu).get_status(0.0)["unit_0"]
     assert unit["selector_type"] == "VirtualSelector"
+
+
+# ---------------------------------------------------------------------------
+# printer.mmu
+# ---------------------------------------------------------------------------
+class FakeObjectPrinter:
+    """A ``printer`` stand-in recording the added objects."""
+
+    def __init__(self) -> None:
+        self.objects = {}
+
+    def add_object(self, name, obj):
+        self.objects[name] = obj
+
+
+def make_printer_mmu(num_tools: int = 5) -> MMU:
+    """Build a bare MMU3 instance that can report the printer.mmu status."""
+    mmu = make_mmu(num_tools)
+    mmu.hh_status = MmuStatus(mmu)
+    mmu.total_stats = OperationStats()
+    return mmu
+
+
+def test_printer_mmu_has_the_happy_hare_fields() -> None:
+    mmu = make_printer_mmu(12)
+    status = mmu.get_status(0.0)
+    hh_status = MmuStatus(mmu).get_status(0.0)
+    for key, value in hh_status.items():
+        assert status[key] == value, key
+
+
+def test_printer_mmu_has_the_extra_fields() -> None:
+    mmu = make_printer_mmu()
+    mmu.current_tool = 2
+    mmu.current_filament = 2
+    mmu.filament_pos = FilamentPos.LOADED
+    status = mmu.get_status(0.0)
+    assert status["is_enabled"] is True
+    assert status["current_tool"] == 2
+    assert status["current_filament"] == 2
+    assert status["filament_pos"] == FILAMENT_POS_LOADED
+    assert status["filament_pos_name"] == "LOADED"
+    assert status["pending_operation"] is None
+    assert status["total_stats"] == OperationStats().to_dict()
+    assert status["job_stats"] == OperationStats().to_dict()
+    assert status["gate_map"] == mmu.gate_map.to_dict()
+
+
+def test_printer_mmu_reports_the_pending_operation() -> None:
+    mmu = make_printer_mmu()
+    mmu.pending_operation = Operation(OperationKind.LOAD, to_tool=1)
+    status = mmu.get_status(0.0)
+    assert status["pending_operation"] == mmu.pending_operation.describe()
+    assert status["reason_for_pause"] == mmu.pending_operation.describe()
+
+
+def test_register_mmu_panel_adds_only_mmu_machine() -> None:
+    mmu = make_printer_mmu()
+    mmu.printer = FakeObjectPrinter()
+    mmu.register_mmu_panel()
+    assert list(mmu.printer.objects) == ["mmu_machine"]
+    assert isinstance(mmu.printer.objects["mmu_machine"], MmuMachine)

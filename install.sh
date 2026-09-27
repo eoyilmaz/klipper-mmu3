@@ -13,28 +13,28 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # --------------------------------------------------------------
-# Linking mmu3.py
-mmu3_path=~/klipper/klippy/extras/
-mmu3_name=mmu3.py
-# always force symlink
-ln -sf "$repo_path/extras/$mmu3_name" $mmu3_path
-echo "Linking $mmu3_name to $mmu3_path successfully complete!"
+# Linking the Klipper modules
+extras_path=~/klipper/klippy/extras/
 
-# --------------------------------------------------------------
-# Linking mmu3_mainsail_prompts.py
-mmu3_mainsail_prompts_path=~/klipper/klippy/extras/
-mmu3_mainsail_prompts_name=mmu3_mainsail_prompts.py
-# always force symlink
-ln -sf "$repo_path/extras/$mmu3_mainsail_prompts_name" $mmu3_mainsail_prompts_path
-echo "Linking $mmu3_mainsail_prompts_name to $mmu3_mainsail_prompts_path successfully complete!"
+# Happy Hare is also configured with [mmu]: its extras/mmu/ package would be
+# imported instead of mmu.py, and its extras/mmu.py would be replaced
+mmu_py="$extras_path/mmu.py"
+if [ -d "$extras_path/mmu" ]; then
+    happy_hare=1
+elif [ -e "$mmu_py" ] || [ -L "$mmu_py" ]; then
+    # anything but a link to this repository's mmu.py
+    [ "$(realpath "$mmu_py" 2>/dev/null)" != "$(realpath "$repo_path/extras/mmu.py")" ] && happy_hare=1
+fi
+if [ -n "$happy_hare" ]; then
+    echo "Happy Hare seems to be installed ($extras_path has mmu or mmu.py), it uses the same [mmu] section."
+    echo "Uninstall Happy Hare before installing klipper-mmu3."
+    exit 1
+fi
 
-# --------------------------------------------------------------
-# Linking the gate map and Mainsail / Fluidd MMU panel support modules
-mmu3_modules_path=~/klipper/klippy/extras/
-for mmu3_module_name in mmu3_gate_map.py mmu3_hh_compat.py; do
+for module_name in mmu.py mmu_gate_map.py mmu_hh_compat.py mmu_mainsail_prompts.py; do
     # always force symlink
-    ln -sf "$repo_path/extras/$mmu3_module_name" $mmu3_modules_path
-    echo "Linking $mmu3_module_name to $mmu3_modules_path successfully complete!"
+    ln -sf "$repo_path/extras/$module_name" $extras_path
+    echo "Linking $module_name to $extras_path successfully complete!"
 done
 
 # --------------------------------------------------------------
@@ -42,15 +42,18 @@ done
 cfg_path=~/printer_data/config/
 cfg_incl_path=~/printer_data/config/printer.cfg
 
-read -p " Do you want to install MMU3 5x or 12x? (y=5x / n=12x): " answer
-if [ "$answer" != "${answer#[Yy]}" ]; then
-    cfg_name=mmu3.cfg
-else
-    cfg_name=mmu3-12x.cfg
-fi
+while [ -z "$cfg_name" ]; do
+    read -p " Which MMU do you want to install? (1=MMU3 5x / 2=MMU3-12x / 3=MMU3-12x-NG): " answer
+    case "$answer" in
+        1) cfg_name=mmu.cfg ;;
+        2) cfg_name=mmu-12x.cfg ;;
+        3) cfg_name=mmu-12x-ng.cfg ;;
+        *) echo "Please enter 1, 2 or 3." ;;
+    esac
+done
 cp -f "$repo_path/$cfg_name" $cfg_path # Overwrite
 
-# Adding the [include mmu3.cfg] line to printer.cfg
+# Adding the [include mmu.cfg] line to printer.cfg
 if [ -f "$cfg_incl_path" ]; then
     if ! grep -q "^\[include $cfg_name\]$" "$cfg_incl_path"; then
         sudo service klipper stop
@@ -65,7 +68,7 @@ fi
 cfg_name=beep.cfg
 ln -sf "$repo_path/$cfg_name" $cfg_path # Overwrite
 
-cfg_name=mmu3_menus.cfg
+cfg_name=mmu_menus.cfg
 ln -sf "$repo_path/$cfg_name" $cfg_path # Overwrite
 
 # Adding the [respond] line to printer.cfg

@@ -15,14 +15,14 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    MMU,
     FilamentPos,
     Operation,
     OperationKind,
 )
-from extras.mmu3_gate_map import GateMap  # noqa: E402
-from extras.mmu3_hh_compat import ACTION_IDLE, ACTION_LOADING  # noqa: E402
+from extras.mmu_gate_map import GateMap  # noqa: E402
+from extras.mmu_hh_compat import ACTION_IDLE, ACTION_LOADING  # noqa: E402
 
 
 class CommandError(Exception):
@@ -70,9 +70,9 @@ class FakeGCode:
             self.help[cmd] = desc
 
 
-def make_mmu(num_tools: int = 5) -> MMU3:
+def make_mmu(num_tools: int = 5) -> MMU:
     """Build a bare MMU3 with just what the commands read."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.gcode = FakeGCode()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
