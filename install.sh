@@ -31,10 +31,21 @@ if [ -n "$happy_hare" ]; then
     exit 1
 fi
 
-for module_name in mmu.py mmu_gate_map.py mmu_hh_compat.py mmu_mainsail_prompts.py; do
+# mmu.py is the [mmu] section. mmu3.py only stops Klipper with a message that
+# explains the rename when a config still has the old [mmu3 MMU3] section.
+for module_name in mmu.py mmu3.py mmu_gate_map.py mmu_hh_compat.py mmu_mainsail_prompts.py; do
     # always force symlink
     ln -sf "$repo_path/extras/$module_name" $extras_path
     echo "Linking $module_name to $extras_path successfully complete!"
+done
+
+# the helper modules before the [mmu3 MMU3] -> [mmu] rename, their links point
+# to files that are gone now
+for module_name in mmu3_gate_map.py mmu3_hh_compat.py mmu3_mainsail_prompts.py; do
+    if [ -L "$extras_path/$module_name" ] && [ ! -e "$extras_path/$module_name" ]; then
+        rm "$extras_path/$module_name"
+        echo "Removed the old $module_name link from $extras_path"
+    fi
 done
 
 # --------------------------------------------------------------
@@ -52,6 +63,16 @@ while [ -z "$cfg_name" ]; do
     esac
 done
 cp -f "$repo_path/$cfg_name" $cfg_path # Overwrite
+
+# Removing the [include] of the config file names before the [mmu3 MMU3] ->
+# [mmu] rename, the new config file is included below
+old_include='^\[include mmu3(-12x|-12x-ng)?\.cfg\]$'
+if [ -f "$cfg_incl_path" ] && grep -Eq "$old_include" "$cfg_incl_path"; then
+    sudo service klipper stop
+    sed -Ei "/$old_include/d" "$cfg_incl_path"
+    sudo service klipper start
+    echo "Removed the old [include mmu3*.cfg] from $cfg_incl_path, copy your settings from the old mmu3 config file to $cfg_name"
+fi
 
 # Adding the [include mmu.cfg] line to printer.cfg
 if [ -f "$cfg_incl_path" ]; then
