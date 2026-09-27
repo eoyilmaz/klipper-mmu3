@@ -1467,8 +1467,8 @@ class MMU3:
         """Return the MMU3 commands with a one-line description each.
 
         The descriptions show up in Klipper's ``HELP`` and in ``MMU_HELP``.
-        The per tool ``Tn`` / ``Kn`` commands, the deprecated aliases and the
-        unsupported Happy Hare commands are not in the table.
+        The per tool ``Tn`` / ``Kn`` commands and the unsupported Happy Hare
+        commands are not in the table.
 
         Returns:
             list[tuple[str, Callable, str]]: (name, handler, description).
@@ -1598,28 +1598,6 @@ class MMU3:
         ):
             self.gcode.register_command(
                 name, partial(self.cmd_not_supported, name=name)
-            )
-
-        # the pre Happy Hare naming, kept working for existing slicer G-code
-        # and macros
-        for old_name, new_name, handler in (
-            ("HOME_MMU", "MMU_HOME", self.cmd_home_mmu),
-            ("UNLOCK_MMU", "MMU_UNLOCK", self.cmd_unlock),
-            ("LT", "MMU_LOAD", self.cmd_mmu_load),
-            ("UT", "MMU_UNLOAD", self.cmd_mmu_unload),
-            ("SELECT_TOOL", "MMU_SELECT", self.cmd_mmu_select),
-            ("UNSELECT_TOOL", "MMU_UNSELECT", self.cmd_unselect_tool),
-            ("MMU_ENABLE", "MMU ENABLE=1", self.cmd_mmu_enable),
-            ("MMU_DISABLE", "MMU ENABLE=0", self.cmd_mmu_disable),
-        ):
-            self.gcode.register_command(
-                old_name,
-                partial(
-                    self.cmd_deprecated_alias,
-                    old_name=old_name,
-                    new_name=new_name,
-                    handler=handler,
-                ),
             )
 
     def register_mmu_panel(self) -> None:
@@ -3776,27 +3754,6 @@ class MMU3:
         if self.current_tool is not None:
             return self.current_tool
         return self.current_filament
-
-    def cmd_deprecated_alias(
-        self,
-        gcmd: GCodeCommand,
-        old_name: str = "",
-        new_name: str = "",
-        handler: None | Callable = None,
-    ) -> bool:
-        """Run a renamed command under its old name, with a warning.
-
-        Args:
-            gcmd (GCodeCommand): The G-code command.
-            old_name (str): The deprecated command name.
-            new_name (str): The command name to use instead.
-            handler (None | Callable): The handler of the new command.
-
-        Returns:
-            bool: The result of the handler.
-        """
-        self.respond_info(f"{old_name} is deprecated, use {new_name} instead.")
-        return handler(gcmd)
 
     def cmd_not_supported(self, gcmd: GCodeCommand, name: str = "") -> bool:
         """Answer a Happy Hare command that has no MMU3 equivalent.

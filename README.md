@@ -328,9 +328,8 @@ The extension supplies all the necessary gcode commands.
 > [!NOTE]
 >
 > The following commands were renamed to match Happy Hare's naming, which the
-> Mainsail / Fluidd MMU panels use. The old names still work but print a
-> deprecation warning, and will be removed in the next release. Please update
-> your slicer G-code and macros:
+> Mainsail / Fluidd MMU panels use. The old names were deprecated in 1.3.0
+> and 1.4.0 and are now removed, please update your slicer G-code and macros:
 >
 > | Old             | New            |
 > |-----------------|----------------|
