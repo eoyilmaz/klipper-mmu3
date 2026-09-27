@@ -1052,6 +1052,9 @@ class MMU3:
         self.current_filament = None
         # how far the filament tip has moved from the MMU toward the nozzle
         self.filament_pos = FilamentPos.UNLOADED
+        # FINDA's state, kept current by the MCU reporting every change of
+        # its pin (reported to the MMU panel, get_status() must not query FINDA)
+        self.finda_triggered = False
         # how far, in mm, the filament tip is from FINDA
         self.filament_tracker = FilamentTracker(self)
         # what the MMU is doing right now, in Happy Hare's vocabulary
@@ -1202,6 +1205,8 @@ class MMU3:
             "filament_motion_sensor_name",
             "filament_motion_sensor encoder_sensor",
         )
+
+        self.setup_finda_sensor(config)
 
         # register commands
         self.register_commands()
@@ -1680,14 +1685,47 @@ class MMU3:
             return True
         return self.filament_motion_sensor.get_status(None)["filament_detected"]
 
+    def setup_finda_sensor(self, config: ConfigWrapper) -> None:
+        """Have the MCU report every change of the FINDA pin.
+
+        FINDA's pin is the pulley stepper's endstop pin. It is shared with the
+        endstop, so ``finda_triggered`` follows FINDA even when nothing
+        queries it, e.g. when the filament is removed by hand.
+
+        Args:
+            config (ConfigWrapper): The MMU3 config.
+        """
+        pin = config.getsection(PULLEY_STEPPER_NAME).get("endstop_pin")
+        # allow_multi_use_pin() takes the bare pin, without ^ ~ ! modifiers
+        self.printer.lookup_object("pins").allow_multi_use_pin(
+            re.sub(r"^[\s^~!]+", "", pin)
+        )
+        buttons = self.printer.load_object(config, "buttons")
+        buttons.register_buttons([pin], self._handle_finda_state)
+
+    def _handle_finda_state(self, eventtime: float, state: int) -> None:
+        """Store a FINDA state reported by the MCU.
+
+        Args:
+            eventtime (float): When the state was received.
+            state (int): 1 if FINDA is triggered, 0 otherwise.
+        """
+        self.finda_triggered = bool(state)
+
     def is_filament_in_finda(self) -> bool:
         """Return if the filament is in FINDA or not.
+
+        FINDA is queried, rather than ``finda_triggered`` returned, so the
+        reading is taken after the queued moves are done.
 
         Returns:
             bool: True if the filament is present in FINDA, False otherwise.
         """
         print_time = self.toolhead.get_last_move_time()
-        return bool(self.pulley_stepper_endstop.query_endstop(print_time))
+        self.finda_triggered = bool(
+            self.pulley_stepper_endstop.query_endstop(print_time)
+        )
+        return self.finda_triggered
 
     def disable_steppers(
         self, steppers: None | ManualStepper | list[ManualStepper] = None
@@ -3398,7 +3436,7 @@ class MMU3:
         self.respond_info(f"Extruder : {self.is_filament_in_switch_sensor()}")
         self.respond_info(
             f"{STEPPER_NAME_MAP[PULLEY_STEPPER_NAME]} : "
-            f"{self.pulley_stepper_endstop.query_endstop(print_time)}"
+            f"{int(self.is_filament_in_finda())}"
         )
         self.respond_info(
             f"{STEPPER_NAME_MAP[SELECTOR_STEPPER_NAME]} : "

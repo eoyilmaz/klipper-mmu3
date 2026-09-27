@@ -199,14 +199,14 @@ class MmuStatus:
 
         FINDA is the gate sensor. It is not queried here - querying an MCU
         endstop pauses the reactor, which ``get_status`` must never do - the
-        tracked filament position (kept in sync with FINDA by
-        ``assess_filament_pos``) is reported instead.
+        state the MCU reports on every change of the FINDA pin is reported
+        instead.
 
         Returns:
             dict: Happy Hare sensor name -> triggered.
         """
         mmu3 = self.mmu3
-        sensors = {"mmu_gate": mmu3.filament_pos.name != "UNLOADED"}
+        sensors = {"mmu_gate": mmu3.finda_triggered}
         if mmu3.filament_switch_sensor is not None:
             sensors[self.switch_sensor_key] = bool(
                 mmu3.filament_switch_sensor.get_status(None)["filament_detected"]

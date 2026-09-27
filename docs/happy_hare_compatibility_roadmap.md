@@ -63,10 +63,10 @@ Small, low-risk items that make the panel and existing commands more complete.
   ([#51](https://github.com/eoyilmaz/klipper-mmu3/issues/51)) Both are hard coded today. Track the
   gear stepper position during bowden moves so the panel's filament bar animates. Must be read from
   already known values in `get_status()`, never from the MCU.
-- [ ] **Cache the last FINDA reading for `sensors.mmu_gate`.**
-  ([#52](https://github.com/eoyilmaz/klipper-mmu3/issues/52)) It is derived from `filament_pos`
-  today because `get_status()` must not query MCU endstops. Store the result of each
-  `is_filament_in_finda()` call and report that instead.
+- [x] **Report FINDA's state as `sensors.mmu_gate`.**
+  ([#52](https://github.com/eoyilmaz/klipper-mmu3/issues/52)) It was derived from `filament_pos`
+  because `get_status()` must not query MCU endstops. The FINDA pin is now shared with a button
+  watcher, so the MCU reports every change (also when the filament is removed by hand).
 - [ ] **Clear gate status on runout / failed load.**
   ([#53](https://github.com/eoyilmaz/klipper-mmu3/issues/53)) Mark the gate `EMPTY` when the
   filament switch sensor reports runout during a print, not only when loading to FINDA fails.
