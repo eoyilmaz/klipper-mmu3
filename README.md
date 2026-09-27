@@ -466,3 +466,18 @@ The MMU3 always loads gate `n` for tool `n`. The following Happy Hare features
 aren't available, and their buttons only print a "not supported" message:
 tool-to-gate remapping, endless spool, bypass, gear motor sync, and loading
 or unloading the extruder only.
+The panel's "T macro color" setting isn't supported either, the MMU3's `Tn`
+commands aren't macros.
+
+### Known differences
+
+The panels read some Happy Hare settings from its `[mmu]` config section. The
+MMU3's section is `[mmu3 MMU3]`, so the panels use their defaults for these:
+
+- `gate_homing_endstop`: Happy Hare's name for FINDA is `mmu_gate`, but the
+  panels don't know FINDA is the gate homing sensor. When the filament is
+  parked at FINDA, the panel draws it slightly past the gate, and doesn't
+  highlight FINDA as the sensor it stopped at.
+- `extruder_homing_endstop`: with the filament switch sensor at `pre_gears` or
+  `on_gears`, Mainsail ends the bowden bar a little past the extruder sensor.
+  When the filament reaches the sensor it is drawn at the right place.
