@@ -1522,6 +1522,11 @@ class MMU3:
                 "Show or edit the filament metadata of the gates",
             ),
             (
+                "MMU_RUNOUT",
+                self.cmd_mmu_runout,
+                "Mark the loaded gate empty on runout (add to runout_gcode)",
+            ),
+            (
                 "MMU_UNLOCK",
                 self.cmd_unlock,
                 "Park the idler so the filament can be moved by hand",
@@ -4090,6 +4095,46 @@ class MMU3:
         )
         return True
 
+    def cmd_mmu_runout(self, gcmd: GCodeCommand) -> bool:
+        """Mark the loaded gate empty after a filament runout.
+
+        Klipper's ``filament_switch_sensor`` has no runout event to listen to,
+        this is meant to be called from its ``runout_gcode``, which Klipper
+        only runs while printing and while the sensor is enabled. The MMU
+        disables the sensor during its own loads and unloads, and the command
+        ignores the runout if the MMU is moving filament or nothing is loaded.
+
+        A runout with filament still in FINDA means the filament broke or got
+        stuck between FINDA and the sensor, the spool is not empty so the gate
+        is not marked empty.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: Always True, a runout never pauses the MMU by itself.
+        """
+        if not self.is_enabled:
+            self.respond_info("MMU is disabled, runout ignored.")
+            return True
+        if self.action != ACTION_IDLE:
+            self.respond_info(f"MMU is busy ({self.action}), runout ignored.")
+            return True
+        gate = self.current_filament
+        if gate is None or self.filament_pos != FilamentPos.LOADED:
+            self.respond_info("No filament loaded, runout ignored.")
+            return True
+        if not self.enable_no_selector_mode and self.is_filament_in_finda():
+            self.respond_info(
+                f"Filament runout on gate {gate}, but FINDA still detects "
+                "filament. The filament may be broken or stuck in the bowden, "
+                "the gate is not marked empty."
+            )
+            return True
+        self.set_gate_status(gate, GATE_EMPTY)
+        self.respond_info(f"Gate {gate} ran out of filament, marked empty.")
+        return True
+
     def cmd_mmu_gate_map(self, gcmd: GCodeCommand) -> bool:
         """Show or edit the filament metadata of the gates.
 
@@ -4202,21 +4247,37 @@ class MMU3:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        if not self.unload_tool():
-            return False
-        if not self.enable_no_selector_mode:
-            if not self.is_filament_in_finda():
-                if not self.unselect_tool():
+        with (
+            FilamentSwitchSensorManager(
+                self.filament_switch_sensor,
+                False,
+                self.respond_debug,
+                self.reactor,
+                self.toolhead,
+            ),
+            FilamentMotionSensorManager(
+                self.filament_motion_sensor,
+                False,
+                self.respond_debug,
+                self.reactor,
+                self.toolhead,
+            ),
+        ):
+            if not self.unload_tool():
+                return False
+            if not self.enable_no_selector_mode:
+                if not self.is_filament_in_finda():
+                    if not self.unselect_tool():
+                        return False
+                else:
+                    self.display_status_msg("M702 Error !!!")
                     return False
             else:
-                self.display_status_msg("M702 Error !!!")
-                return False
-        else:
-            if not self.unselect_tool():
-                return False
-            self.current_filament = None
-        self.display_status_msg("M702 ok ...")
-        return True
+                if not self.unselect_tool():
+                    return False
+                self.current_filament = None
+            self.display_status_msg("M702 ok ...")
+            return True
 
     @auto_pause
     @measure_duration

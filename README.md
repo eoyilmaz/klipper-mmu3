@@ -287,6 +287,27 @@ The extension supplies all the necessary gcode commands.
    MMU_GATE_MAP RESET=1          ; clear all gates
    ```
 
+   A gate is marked empty when loading it to FINDA fails. To also mark it
+   empty when the spool runs out during a print, add `MMU_RUNOUT` to the
+   `runout_gcode` of your filament switch sensor (Klipper has no runout event
+   the MMU could listen to):
+
+   ```ini
+   [filament_switch_sensor my_filament_sensor]
+   switch_pin: ...
+   pause_on_runout: False
+   runout_gcode:
+     MMU_RUNOUT
+     PAUSE
+   ```
+
+   Klipper only runs `runout_gcode` while printing, and the MMU turns the
+   sensor off while it loads or unloads, so tool changes never mark a gate
+   empty. `MMU_RUNOUT` also does nothing when the MMU is busy or no filament
+   is loaded. If FINDA still detects filament, the filament broke or got stuck
+   between FINDA and the sensor rather than running out, so the gate is not
+   marked empty (this is common with a `pre_gears` sensor).
+
 14. `MMU ENABLE=0|1`
 
    Enables (`MMU ENABLE=1`) or disables (`MMU ENABLE=0`) the MMU. Disabling also
@@ -349,6 +370,7 @@ design.
    MMU_PRELOAD
    MMU_RECOVER
    MMU_RETRY
+   MMU_RUNOUT
    MMU_SELECT
    MMU_STATS
    MMU_STATS_RESET_JOB
