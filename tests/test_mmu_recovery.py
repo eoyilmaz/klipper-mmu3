@@ -32,6 +32,8 @@ from extras.mmu import (  # noqa: E402
 def make_mmu() -> MMU:
     """Build a bare MMU3 instance without running __init__ or touching Klipper."""
     mmu = object.__new__(MMU)
+    # no user macros are defined
+    mmu.printer = types.SimpleNamespace(lookup_object=lambda name, default=None: None)
     mmu.is_paused = False
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.current_tool = None

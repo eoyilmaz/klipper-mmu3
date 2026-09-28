@@ -59,6 +59,10 @@ class FakeGCmd:
 class FakePrinter:
     command_error = CommandError
 
+    def lookup_object(self, name, default=None):
+        # no user macros are defined
+        return default
+
 
 def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
     """Build a bare MMU3 whose moves only record what was done."""

@@ -60,6 +60,9 @@ class FakePrinter:
         self.webhooks = FakeWebhooks()
 
     def lookup_object(self, name, default=None):
+        if name.startswith("gcode_macro "):
+            # no user macros are defined
+            return default
         assert name == "webhooks"
         return self.webhooks
 
