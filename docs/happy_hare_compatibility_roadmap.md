@@ -130,9 +130,12 @@ Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macro
   `CUT_FILAMENT_IN_EXTRUDER` macros are renamed to Happy Hare's `_MMU_FORM_TIP` and `_MMU_CUT_TIP`,
   Klipper stops with the rename steps if a needed one is missing (`_MMU_CUT_TIP` only with the
   cutter enabled).
-- [ ] **Sample slicer G-code in Happy Hare style.**
+- [x] **Sample slicer G-code in Happy Hare style.**
   ([#61](https://github.com/eoyilmaz/klipper-mmu3/issues/61)) Update `sample_configs/` so start /
-  end G-code uses `MMU_PRINT_START`, `MMU_PRINT_END` and `MMU_CHANGE_TOOL`.
+  end G-code uses `MMU_PRINT_START`, `MMU_PRINT_END` and `MMU_MOTORS_OFF`, and the README shows the
+  MMU parts of the slicer G-code with links to the samples. Tool changes stay `T[initial_tool]` /
+  `T[next_extruder]` instead of `MMU_CHANGE_TOOL`: the slicer only recognizes a `T` command as the
+  tool change, otherwise it adds its own after the change filament G-code.
 
 ## Phase 3 — Tool / Gate Split, TTG Map and Endless Spool
 

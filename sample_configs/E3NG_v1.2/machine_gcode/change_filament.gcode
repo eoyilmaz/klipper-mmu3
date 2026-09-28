@@ -12,6 +12,9 @@ PURGE_PLATFORM_EXTEND ; be sure the platform is extended
 {if old_filament_temp > 142 && next_extruder < 255}
     M104 S[old_filament_temp]
 {endif}
+; same as MMU_CHANGE_TOOL TOOL=[next_extruder], but the slicer only
+; recognizes a T command as the tool change, with anything else it adds its
+; own T command after this G-code
 T[next_extruder]
 G92 E0
 {if flush_length_1 + flush_length_2 + flush_length_3 + flush_length_4 <= 1}

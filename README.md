@@ -178,12 +178,46 @@ update your `printer.cfg` and slicer (currently Orca Slicer) GCode commands.
 Typically you don't need to know all the commands, the menus supply all the
 necessary functionality to prepare MMU for printing and troubleshoot.
 
-Just add the following GCode to your Machine start G-Code, somewhere after all
-the normal homing, bed leveling stuff finished and before any filament is used:
+### Slicer G-code
 
-```gcode
-T[initial_tool]
-```
+The slicer G-code follows the Happy Hare style. The
+[sample slicer G-code](./sample_configs/E3NG_v1.2/machine_gcode/) (Orca
+Slicer) has the full versions, the MMU related parts are:
+
+- [Machine start G-code](./sample_configs/E3NG_v1.2/machine_gcode/machine_start.gcode):
+  call `MMU_PRINT_START` at the beginning, and load the first tool after all
+  the homing, bed leveling etc. is finished and before any filament is used:
+
+  ```gcode
+  MMU_PRINT_START
+  ; ... homing, bed leveling, heating ...
+  T[initial_tool]
+  ```
+
+- [Change filament G-code](./sample_configs/E3NG_v1.2/machine_gcode/change_filament.gcode):
+  change the tool, before the flushing:
+
+  ```gcode
+  T[next_extruder]
+  ```
+
+- [Machine end G-code](./sample_configs/E3NG_v1.2/machine_gcode/machine_end.gcode):
+  unload the filament, turn off the MMU motors and end the MMU print job:
+
+  ```gcode
+  MMU_UNLOAD
+  MMU_MOTORS_OFF
+  MMU_PRINT_END STATE=complete
+  ```
+
+`T[initial_tool]` / `T[next_extruder]` are the same as
+`MMU_CHANGE_TOOL TOOL=[initial_tool]` / `MMU_CHANGE_TOOL TOOL=[next_extruder]`,
+but use the `T` commands in the slicer: the slicer only recognizes a `T`
+command as the tool change. With `MMU_CHANGE_TOOL` it adds its own `T` command
+after the change filament G-code (after the flushing), and its G-code preview
+doesn't see the tool change.
+
+### Commands
 
 The extension supplies all the necessary gcode commands.
 
