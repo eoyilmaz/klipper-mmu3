@@ -112,6 +112,13 @@ GATE_STATUS_TEXT = {
     GATE_AVAILABLE: "available",
 }
 
+# optional user macros, called only if defined, named as in Happy Hare
+PRE_UNLOAD_MACRO = "_MMU_PRE_UNLOAD"
+POST_UNLOAD_MACRO = "_MMU_POST_UNLOAD"
+PRE_LOAD_MACRO = "_MMU_PRE_LOAD"
+POST_LOAD_MACRO = "_MMU_POST_LOAD"
+ACTION_CHANGED_MACRO = "_MMU_ACTION_CHANGED"
+
 logger = logging.getLogger(__name__)
 PRINT_STATS_POLL_INTERVAL = 10.0
 
@@ -1453,11 +1460,69 @@ class MMU:
             None: Nothing.
         """
         previous = getattr(self, "action", ACTION_IDLE)
-        self.action = action
+        self.set_action(action)
         try:
             yield
         finally:
-            self.action = previous
+            self.set_action(previous)
+
+    def set_action(self, action: str) -> None:
+        """Set ``action`` and call ``_MMU_ACTION_CHANGED`` if it changed.
+
+        As in Happy Hare the macro gets ``ACTION`` and ``OLD_ACTION``, and an
+        error in it is only reported, it doesn't fail the running operation.
+
+        Args:
+            action (str): One of the Happy Hare ``ACTION_*`` strings.
+        """
+        old_action = getattr(self, "action", ACTION_IDLE)
+        self.action = action
+        if action == old_action or not self.is_macro_defined(ACTION_CHANGED_MACRO):
+            return
+        try:
+            self.gcode.run_script_from_command(
+                f"{ACTION_CHANGED_MACRO} ACTION='{action}' OLD_ACTION='{old_action}'"
+            )
+        except self.printer.command_error as e:
+            self.respond_info(f"{ACTION_CHANGED_MACRO} failed: {e}")
+
+    def is_macro_defined(self, name: str) -> bool:
+        """Whether a ``[gcode_macro <name>]`` is defined.
+
+        Args:
+            name (str): The macro name.
+
+        Returns:
+            bool: True if the macro is defined.
+        """
+        return self.printer.lookup_object(f"gcode_macro {name}", None) is not None
+
+    def run_user_macro(self, name: str) -> bool:
+        """Run the optional user macro ``name`` and wait for its moves.
+
+        Does nothing if the macro isn't defined. A failing macro fails the
+        calling load / unload like a failing MMU step, so ``auto_pause`` and
+        the recovery work the same.
+
+        Args:
+            name (str): The macro name, one of the ``*_MACRO`` constants.
+
+        Returns:
+            bool: False if the macro raised an error, True otherwise.
+        """
+        if not self.is_macro_defined(name):
+            return True
+        self.respond_debug(f"Running {name}")
+        try:
+            self.gcode.run_script_from_command(name)
+            self.toolhead.wait_moves()
+        except self.printer.command_error as e:
+            error = f"{name} failed: {e}"
+            self.display_status_msg(error)
+            if self.current_operation is not None:
+                self.current_operation.error = error
+            return False
+        return True
 
     def save_total_stats(self) -> None:
         """Persist ``total_stats`` via ``save_variables``, if configured."""
@@ -3413,13 +3478,20 @@ class MMU:
             return False
 
         self.respond_debug(f"MMU_LOAD {tool_id}")
+        if self.filament_pos == FilamentPos.LOADED:
+            # nothing to load, so no load hooks either
+            return self.move_filament_to(FilamentPos.LOADED, tool_id)
+        if not self.run_user_macro(PRE_LOAD_MACRO):
+            return False
         if self.filament_pos < FilamentPos.AT_EXTRUDER and not self.select_tool(
             tool_id
         ):
             return False
         # planner runs only the steps still needed to reach LOADED, so a retry
         # after a mid-load failure does not repeat the whole bowden move
-        return self.move_filament_to(FilamentPos.LOADED, tool_id)
+        if not self.move_filament_to(FilamentPos.LOADED, tool_id):
+            return False
+        return self.run_user_macro(POST_LOAD_MACRO)
 
     def unload_tool(self) -> bool:
         """Unload filament from nozzle to MMU3.
@@ -3451,6 +3523,11 @@ class MMU:
             return True
         self.respond_debug(f"Current filament is T{self.current_filament}")
 
+        # nothing to unload, so no unload hooks either
+        run_hooks = self.filament_pos > FilamentPos.UNLOADED
+        if run_hooks and not self.run_user_macro(PRE_UNLOAD_MACRO):
+            return False
+
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
             self.respond_debug(f"Cut T{self.current_filament}")
             # cut the filament in extruder
@@ -3460,7 +3537,9 @@ class MMU:
 
         self.respond_debug(f"MMU_UNLOAD {self.current_filament}")
         # planner runs only the steps still needed to reach UNLOADED
-        return self.move_filament_to(FilamentPos.UNLOADED, self.current_filament)
+        if not self.move_filament_to(FilamentPos.UNLOADED, self.current_filament):
+            return False
+        return not run_hooks or self.run_user_macro(POST_UNLOAD_MACRO)
 
     def eject_from_extruder(self) -> bool:
         """Preheat the heater if needed and unload the filament with ramming.

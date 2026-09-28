@@ -116,11 +116,11 @@ Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macro
   on) keeps following `print_stats` for start / end G-code that doesn't call them, and is reported.
   Still open: check that the gates used by the print are available, which needs the slicer tool map
   ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)).
-- [ ] **User callback macros.** ([#59](https://github.com/eoyilmaz/klipper-mmu3/issues/59)) Call
+- [x] **User callback macros.** ([#59](https://github.com/eoyilmaz/klipper-mmu3/issues/59)) Call
   optional user macros at fixed points, like Happy Hare's `_MMU_PRE_UNLOAD`, `_MMU_POST_UNLOAD`,
-  `_MMU_PRE_LOAD`, `_MMU_POST_LOAD` and `_MMU_ACTION_CHANGED`. Only call a macro if it exists, so
-  existing setups are unaffected. Check the exact names and parameters against Happy Hare's
-  `mmu_sequence.cfg` before implementing.
+  `_MMU_PRE_LOAD`, `_MMU_POST_LOAD` and `_MMU_ACTION_CHANGED` (with `ACTION` / `OLD_ACTION`). Only
+  call a macro if it exists, so existing setups are unaffected. A failing load / unload macro fails
+  the operation. Still open: `_MMU_POST_FORM_TIP` and a configurable macro name per hook.
 - [ ] **`MMU_FORM_TIP` and `MMU_CUT`.** ([#60](https://github.com/eoyilmaz/klipper-mmu3/issues/60))
   Standalone commands for tip forming (ramming) and the in-extruder cut, so they can be tested and
   tuned outside a tool change. The code paths already exist (`ramming_slicer`,

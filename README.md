@@ -433,6 +433,41 @@ design.
    T11
    ```
 
+### Callback macros
+
+Same as in Happy Hare, the MMU calls these macros at fixed points of a load /
+unload if you define them, so you can add your own moves, purges or LED
+effects. Nothing is called for a macro you don't define.
+
+| Macro                 | Called                                                              |
+|-----------------------|---------------------------------------------------------------------|
+| `_MMU_PRE_UNLOAD`     | Before an unload starts, before the filament is cut in the extruder |
+| `_MMU_POST_UNLOAD`    | After the filament is unloaded to the MMU                           |
+| `_MMU_PRE_LOAD`       | Before a load starts, before the gate is selected                   |
+| `_MMU_POST_LOAD`      | After the filament is loaded to the nozzle (e.g. to purge or wipe)  |
+| `_MMU_ACTION_CHANGED` | On every change of the MMU action, with `ACTION` and `OLD_ACTION`   |
+
+A tool change calls the unload macros and then the load macros. The load /
+unload macros are skipped when there is nothing to load / unload, and the
+moves they make are finished before the MMU continues. An error in one of them
+fails the load / unload like a failing MMU step does, so the print is paused
+and the recovery dialog is shown. An error in `_MMU_ACTION_CHANGED` is only
+reported.
+
+`ACTION` and `OLD_ACTION` are Happy Hare's action names (`Idle`, `Loading`,
+`Unloading`, `Loading Ext`, `Unloading Ext`, `Forming Tip`, `Cutting Tip`,
+`Heating`, `Checking`, `Homing`, `Selecting`, `Cutting Filament`):
+
+```ini
+[gcode_macro _MMU_ACTION_CHANGED]
+gcode:
+    {% if params.ACTION == "Idle" %}
+        SET_LED LED=mmu_leds RED=0 GREEN=0 BLUE=0
+    {% else %}
+        SET_LED LED=mmu_leds RED=0 GREEN=0 BLUE=1
+    {% endif %}
+```
+
 ## Mainsail / Fluidd MMU Panel & Spoolman
 
 Mainsail (v2.15 and later) and Fluidd (v1.34 and later) ship an MMU panel built
