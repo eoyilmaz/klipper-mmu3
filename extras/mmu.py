@@ -37,6 +37,12 @@ from extras.mmu_hh_compat import (
     ACTION_SELECTING,
     ACTION_UNLOADING,
     ACTION_UNLOADING_EXTRUDER,
+    IN_PRINT_STATES,
+    PRINT_END_STATES,
+    PRINT_STATE_MAP,
+    PRINT_STATE_PAUSED,
+    PRINT_STATE_PRINTING,
+    PRINT_STATE_READY,
     SPOOLMAN_OFF,
     SPOOLMAN_READONLY,
     SPOOLMAN_SUPPORT_VALUES,
@@ -1073,6 +1079,9 @@ class MMU:
         self.save_variables = None
         self.print_stats = None
         self._print_stats_state = "standby"
+        # Happy Hare's print_state, set by MMU_PRINT_START / MMU_PRINT_END and
+        # by following print_stats
+        self.print_state = PRINT_STATE_READY
 
         # load config values
         # are we in debug mode
@@ -1101,6 +1110,9 @@ class MMU:
             list(SPOOLMAN_SUPPORT_VALUES),
             SPOOLMAN_READONLY,
         )
+        # start / end the print job when print_stats starts / ends a print,
+        # turn off if the start / end G-code calls MMU_PRINT_START / _END
+        self.print_start_detection = config.getboolean("print_start_detection", True)
         # the spool last sent to Moonraker, NO_SPOOL forces the first sync
         self._active_spool_id: None | int = NO_SPOOL
         self._spoolman_error_reported = False
@@ -1280,7 +1292,7 @@ class MMU:
             )
 
     def _poll_print_stats(self, eventtime: float) -> float:
-        """Reset the current job's stats when a new print starts.
+        """Follow ``print_stats`` even when nothing reads the MMU status.
 
         Args:
             eventtime (float): The reactor event time.
@@ -1288,11 +1300,75 @@ class MMU:
         Returns:
             float: The next time this timer should fire.
         """
-        state = self.print_stats.get_status(eventtime)["state"]
-        if state == "printing" and self._print_stats_state != "printing":
-            self.job_stats.reset()
-        self._print_stats_state = state
+        self.follow_print_stats(eventtime)
         return eventtime + PRINT_STATS_POLL_INTERVAL
+
+    @property
+    def is_in_print(self) -> bool:
+        """Return True while a print job is printing or paused.
+
+        Returns:
+            bool: True if a print is in progress.
+        """
+        return self.print_state in IN_PRINT_STATES
+
+    def on_print_start(self) -> None:
+        """Start a print job, reset the job stats and switch to ``printing``.
+
+        Does nothing while a print is in progress, so ``MMU_PRINT_START`` and
+        the ``print_stats`` detection of the same print reset the job stats
+        only once.
+        """
+        if self.is_in_print:
+            return
+        self.job_stats.reset()
+        self.print_state = PRINT_STATE_PRINTING
+
+    def on_print_end(self, state: str) -> None:
+        """End the print job with the given ``print_state``.
+
+        Does nothing if no print is in progress, so ``MMU_PRINT_END`` and the
+        ``print_stats`` detection of the same print end it only once.
+
+        Args:
+            state (str): The end state, e.g. ``complete`` or ``cancelled``.
+        """
+        if not self.is_in_print:
+            return
+        self.print_state = state
+
+    def follow_print_stats(self, eventtime: float) -> None:
+        """Update ``print_state`` when the ``print_stats`` state changes.
+
+        Pause and resume are always followed. A print start / end only with
+        ``print_start_detection`` on, otherwise ``MMU_PRINT_START`` /
+        ``MMU_PRINT_END`` start and end the print job.
+
+        Args:
+            eventtime (float): The current event time.
+        """
+        if self.print_stats is None:
+            return
+        state = self.print_stats.get_status(eventtime).get("state", "standby")
+        if state == self._print_stats_state:
+            return
+        self._print_stats_state = state
+        if state == "printing":
+            if self.print_state == PRINT_STATE_PAUSED:
+                self.print_state = PRINT_STATE_PRINTING
+            elif self.print_start_detection:
+                self.on_print_start()
+        elif state == "paused":
+            if self.print_state == PRINT_STATE_PRINTING:
+                self.print_state = PRINT_STATE_PAUSED
+        else:
+            end_state = PRINT_STATE_MAP.get(state, PRINT_STATE_READY)
+            if self.is_in_print:
+                if self.print_start_detection:
+                    self.on_print_end(end_state)
+            elif end_state == PRINT_STATE_READY:
+                # print_stats was reset after the print ended
+                self.print_state = PRINT_STATE_READY
 
     def save_gate_map(self) -> None:
         """Persist ``gate_map`` via ``save_variables``, if configured."""
@@ -1572,6 +1648,16 @@ class MMU:
                 "Retry the failed operation and resume the print (FORCE=1)",
             ),
             ("MMU_MOTORS_OFF", self.cmd_motors_off, "Turn off the MMU motors"),
+            (
+                "MMU_PRINT_START",
+                self.cmd_mmu_print_start,
+                "Start the print job (add to the print start G-code)",
+            ),
+            (
+                "MMU_PRINT_END",
+                self.cmd_mmu_print_end,
+                "End the print job (STATE=complete|cancelled|error|ready|standby)",
+            ),
             (
                 "MMU_STATS",
                 self.cmd_mmu_stats,
@@ -3489,6 +3575,41 @@ class MMU:
             bool: True if command completed successfully, False otherwise.
         """
         self.job_stats.reset()
+        return True
+
+    def cmd_mmu_print_start(self, gcmd: GCodeCommand) -> bool:
+        """Start the print job, ``MMU_PRINT_START``.
+
+        Resets the job stats and sets ``print_state`` to ``printing``. Does
+        nothing while a print is in progress.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        self.on_print_start()
+        return True
+
+    def cmd_mmu_print_end(self, gcmd: GCodeCommand) -> bool:
+        """End the print job, ``MMU_PRINT_END STATE=complete``.
+
+        Sets ``print_state`` to ``STATE`` (``complete`` by default). Does
+        nothing if no print is in progress.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        state = gcmd.get("STATE", "complete").lower()
+        if state not in PRINT_END_STATES:
+            raise gcmd.error(
+                f"Unknown STATE '{state}', use one of {', '.join(PRINT_END_STATES)}"
+            )
+        self.on_print_end(state)
         return True
 
     @auto_pause

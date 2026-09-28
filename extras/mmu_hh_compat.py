@@ -53,15 +53,24 @@ SPOOLMAN_OFF = "off"
 SPOOLMAN_READONLY = "readonly"
 SPOOLMAN_SUPPORT_VALUES = (SPOOLMAN_OFF, SPOOLMAN_READONLY)
 
+PRINT_STATE_READY = "ready"
+PRINT_STATE_PRINTING = "printing"
+PRINT_STATE_PAUSED = "paused"
+PRINT_STATE_COMPLETE = "complete"
+
 # Klipper print_stats.state -> Happy Hare print_state
 PRINT_STATE_MAP = {
-    "standby": "ready",
-    "printing": "printing",
-    "paused": "paused",
-    "complete": "complete",
+    "standby": PRINT_STATE_READY,
+    "printing": PRINT_STATE_PRINTING,
+    "paused": PRINT_STATE_PAUSED,
+    "complete": PRINT_STATE_COMPLETE,
     "cancelled": "cancelled",
     "error": "error",
 }
+# the print_state values of a print in progress
+IN_PRINT_STATES = (PRINT_STATE_PRINTING, PRINT_STATE_PAUSED)
+# the end states MMU_PRINT_END accepts, same as Happy Hare
+PRINT_END_STATES = ("complete", "cancelled", "error", "ready", "standby")
 
 
 def _or_unknown(value: None | int) -> int:
@@ -171,17 +180,18 @@ class MmuStatus:
     def print_state(self, eventtime: float) -> str:
         """Return the Happy Hare ``print_state``.
 
+        Follows ``print_stats`` first, so the panel sees a print start / end
+        right away instead of on the next poll.
+
         Returns:
             str: e.g. ``ready``, ``printing``, ``pause_locked``.
         """
         mmu = self.mmu
+        mmu.follow_print_stats(eventtime)
         if mmu.is_paused:
             # the MMU paused itself and waits for the operator
             return "pause_locked"
-        if mmu.print_stats is None:
-            return "ready"
-        state = mmu.print_stats.get_status(eventtime).get("state", "standby")
-        return PRINT_STATE_MAP.get(state, "ready")
+        return mmu.print_state
 
     def filament_direction(self) -> int:
         """Return the direction the filament is currently moving.
@@ -321,7 +331,7 @@ class MmuStatus:
             "sync_drive": False,
             "clog_detection": 0,
             "clog_detection_enabled": 0,
-            "print_start_detection": 0,
+            "print_start_detection": int(mmu.print_start_detection),
             "sensors": self.sensors(),
         }
 

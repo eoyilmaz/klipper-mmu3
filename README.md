@@ -273,7 +273,7 @@ The extension supplies all the necessary gcode commands.
      and survive restarts. Without `[save_variables]` configured, they are
      kept in memory only.
    - `job_stats` - statistics for the current print job only. These reset
-     automatically whenever a new print starts (detected via `[print_stats]`)
+     automatically whenever a new print starts (see `MMU_PRINT_START` below)
      or manually with `MMU_STATS_RESET_JOB`.
 
    These are also available on your display, under `MMU` -> `Statistics`,
@@ -347,6 +347,20 @@ The extension supplies all the necessary gcode commands.
 
    Lists the MMU commands with a one-line description each. Klipper's `HELP`
    shows the same descriptions.
+
+17. `MMU_PRINT_START` / `MMU_PRINT_END`
+
+   Start and end the MMU print job, same as in Happy Hare. `MMU_PRINT_START`
+   resets the job statistics and sets the `print_state` the MMU panel shows to
+   `printing`. `MMU_PRINT_END STATE=complete` sets it to `complete`
+   (`STATE=` also takes `cancelled`, `error`, `ready` and `standby`). Both do
+   nothing if the print job has already started / ended.
+
+   You don't have to call them. With `print_start_detection: True` (the
+   default) the MMU starts and ends the print job when Klipper's
+   `[print_stats]` does. If your print start / end G-code calls them, you can
+   set `print_start_detection: False` in `[mmu]`, the job then only starts and
+   ends with these commands. Pausing and resuming are always detected.
 
 > [!NOTE]
 >
