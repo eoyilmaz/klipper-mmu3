@@ -110,10 +110,12 @@ Small, low-risk items that make the panel and existing commands more complete.
 
 Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macros.
 
-- [ ] **`MMU_PRINT_START` / `MMU_PRINT_END`.**
-  ([#58](https://github.com/eoyilmaz/klipper-mmu3/issues/58)) Reset job stats, check that all gates
-  used by the print are available, and switch `print_state` explicitly instead of only following
-  `print_stats`. Report `print_start_detection`.
+- [x] **`MMU_PRINT_START` / `MMU_PRINT_END`.**
+  ([#58](https://github.com/eoyilmaz/klipper-mmu3/issues/58)) Reset job stats and switch
+  `print_state` explicitly instead of only following `print_stats`. `print_start_detection` (default
+  on) keeps following `print_stats` for start / end G-code that doesn't call them, and is reported.
+  Still open: check that the gates used by the print are available, which needs the slicer tool map
+  ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)).
 - [ ] **User callback macros.** ([#59](https://github.com/eoyilmaz/klipper-mmu3/issues/59)) Call
   optional user macros at fixed points, like Happy Hare's `_MMU_PRE_UNLOAD`, `_MMU_POST_UNLOAD`,
   `_MMU_PRE_LOAD`, `_MMU_POST_LOAD` and `_MMU_ACTION_CHANGED`. Only call a macro if it exists, so

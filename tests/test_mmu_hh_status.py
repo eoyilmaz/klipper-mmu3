@@ -80,6 +80,9 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.is_homed = True
     mmu.is_paused = False
     mmu.print_stats = FakePrintStats("standby")
+    mmu._print_stats_state = "standby"
+    mmu.print_state = "ready"
+    mmu.print_start_detection = True
     mmu.current_tool = None
     mmu.current_filament = None
     mmu.filament_pos = FilamentPos.UNLOADED
@@ -203,10 +206,20 @@ def test_last_and_next_tool_unknown_outside_tool_change() -> None:
 )
 def test_print_state_mapping(state, expected, in_print) -> None:
     mmu = make_mmu()
-    mmu.print_stats = FakePrintStats(state)
+    # every state but standby is reached from a print
+    mmu.print_stats.state = "printing"
+    MmuStatus(mmu).get_status(0.0)
+    mmu.print_stats.state = state
     status = MmuStatus(mmu).get_status(0.0)
     assert status["print_state"] == expected
     assert status["is_in_print"] is in_print
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_print_start_detection_is_reported(enabled) -> None:
+    mmu = make_mmu()
+    mmu.print_start_detection = enabled
+    assert MmuStatus(mmu).get_status(0.0)["print_start_detection"] == int(enabled)
 
 
 def test_print_state_without_print_stats_is_ready() -> None:
