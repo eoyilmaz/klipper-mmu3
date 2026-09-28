@@ -44,7 +44,7 @@ M109 S{first_layer_temperature[0]} ; wait for nozzle temp to stabilize
 PURGE_PLATFORM_EXTEND
 M106 P1 S255
 M106 P2 S255
-T[initial_tool]
+T[initial_tool] ; load the first tool, same as MMU_CHANGE_TOOL TOOL=[initial_tool]
 G92 E0
 G0 E10 F3000
 PURGE_PLATFORM_RETRACT
