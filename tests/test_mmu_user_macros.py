@@ -67,6 +67,8 @@ def make_mmu(macros=(), failing=()) -> MMU:
         failing: The names of the defined user macros that raise an error.
     """
     mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.selected_tool = None
     mmu.printer = FakePrinter()
     mmu.printer.macros = set(macros) | set(failing)
     mmu.is_paused = False

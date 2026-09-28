@@ -34,6 +34,8 @@ from extras.mmu import (  # noqa: E402
 def make_mmu() -> MMU:
     """Build a bare MMU3 instance, enough for track_operation to run."""
     mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.selected_tool = None
     mmu.loaded_gate = None
     mmu.current_operation = None
     mmu.pending_operation = None
@@ -212,6 +214,8 @@ def test_track_operation_a_broken_save_total_stats_does_not_break_the_command() 
 def make_saved_mmu(variables: dict) -> MMU:
     """Build a bare MMU3 instance with the given saved variables."""
     mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.selected_tool = None
     mmu.save_variables = types.SimpleNamespace(allVariables=variables)
     return mmu
 

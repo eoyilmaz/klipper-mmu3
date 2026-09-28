@@ -70,6 +70,8 @@ def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
     mmu.printer = FakePrinter()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.save_variables = None
     mmu.is_enabled = True
     mmu.is_homed = True

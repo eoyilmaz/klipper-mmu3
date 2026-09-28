@@ -96,6 +96,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.printer = FakePrinter()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.spoolman_support = SPOOLMAN_READONLY
     mmu._active_spool_id = -1
     mmu._spoolman_error_reported = False
@@ -428,7 +430,7 @@ def test_select_refuses_while_another_gate_is_loaded() -> None:
     assert "unload it" in mmu.messages[0]
 
 
-@pytest.mark.parametrize("params", [{"GATE": 2}, {"VALUE": 2}])
+@pytest.mark.parametrize("params", [{"GATE": 2}, {"TOOL": 2}])
 def test_select_when_unloaded(params) -> None:
     mmu = make_select_mmu()
     assert mmu.cmd_mmu_select(FakeGCmd(**params)) is True
