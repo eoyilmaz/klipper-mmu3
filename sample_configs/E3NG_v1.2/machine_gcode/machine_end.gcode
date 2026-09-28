@@ -29,4 +29,6 @@ MANUAL_STEPPER STEPPER=pulley_stepper ENABLE=0
 MANUAL_STEPPER STEPPER=idler_stepper ENABLE=0
 MANUAL_STEPPER STEPPER=selector_stepper ENABLE=0
 
+MMU_PRINT_END STATE=complete ; end the MMU print job
+
 ; SET_PIN PIN=main_led VALUE=0 ; turn off main LED

@@ -1,4 +1,5 @@
 CLEAR_PAUSE ; To prevent "Already Paused" errors...
+MMU_PRINT_START ; start the MMU print job, resets the job statistics
 SET_PIN PIN=main_led VALUE=1.00
 ; SET_FILAMENT_SENSOR SENSOR=my_filament_sensor ENABLE=0
 ; SET_FILAMENT_SENSOR SENSOR=encoder_sensor ENABLE=0
