@@ -62,8 +62,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.gate_map = GateMap(num_tools)
     mmu.is_enabled = True
     mmu.is_paused = False
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.current_operation = None
     mmu.pending_operation = None
@@ -77,8 +77,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
 
         return f
 
-    mmu.select_tool = record("select")
-    mmu.load_tool = record("load")
+    mmu.select_gate = record("select")
+    mmu.load_gate = record("load")
     mmu.pre_load_filament_to_finda = record("preload")
     mmu.cmd_tx = lambda gcmd, tool_id: record("tx")(tool_id)
     mmu.assess_filament_pos = lambda: None
@@ -166,9 +166,9 @@ def test_mmu_change_tool_accepts_gate_and_tool(name) -> None:
 def test_mmu_recover_accepts_gate_and_tool(name) -> None:
     mmu = make_mmu()
     assert mmu.cmd_mmu_recover(FakeGCmd(**{name: 2})) is True
-    assert mmu.current_filament == 2
+    assert mmu.loaded_gate == 2
     assert mmu.cmd_mmu_recover(FakeGCmd(**{name: -1})) is True
-    assert mmu.current_filament is None
+    assert mmu.loaded_gate is None
 
 
 @pytest.mark.parametrize(

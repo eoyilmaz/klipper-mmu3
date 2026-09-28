@@ -37,8 +37,8 @@ def make_mmu(num_tools: int = 5, finda: bool = False) -> MMU:
     mmu.gate_map.update(2, status=GATE_AVAILABLE)
     mmu.save_variables = None
     mmu.is_enabled = True
-    mmu.current_tool = 2
-    mmu.current_filament = 2
+    mmu.current_gate = 2
+    mmu.loaded_gate = 2
     mmu.filament_pos = FilamentPos.LOADED
     mmu.action = ACTION_IDLE
     mmu.enable_no_selector_mode = False
@@ -78,7 +78,7 @@ def test_runout_in_no_selector_mode_does_not_read_finda() -> None:
             f"MMU is busy ({ACTION_UNLOADING}), runout ignored.",
         ),
         (
-            lambda mmu: setattr(mmu, "current_filament", None),
+            lambda mmu: setattr(mmu, "loaded_gate", None),
             "No filament loaded, runout ignored.",
         ),
         (
@@ -122,7 +122,7 @@ def test_m702_turns_off_the_runout_sensors_while_unloading() -> None:
     mmu.display_status_msg = mmu.messages.append
     states = []
 
-    def unload_tool():
+    def unload_gate():
         states.append(
             (
                 mmu.filament_switch_sensor.runout_helper.sensor_enabled,
@@ -131,8 +131,8 @@ def test_m702_turns_off_the_runout_sensors_while_unloading() -> None:
         )
         return True
 
-    mmu.unload_tool = unload_tool
-    mmu.unselect_tool = lambda: True
+    mmu.unload_gate = unload_gate
+    mmu.unselect_gate = lambda: True
     # skip the pause / stats / stepper decorators
     m702 = inspect.unwrap(MMU.cmd_m702)
     assert m702(mmu, FakeGCmd()) is True

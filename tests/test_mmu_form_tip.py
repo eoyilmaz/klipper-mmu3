@@ -51,8 +51,8 @@ def make_mmu(cutter: bool = False, hot: bool = True) -> MMU:
     mmu.is_enabled = True
     mmu.is_paused = False
     mmu.filament_pos = FilamentPos.LOADED
-    mmu.current_tool = None
-    mmu.current_filament = 1
+    mmu.current_gate = None
+    mmu.loaded_gate = 1
     mmu.enable_filament_cutter = cutter
     mmu.filament_switch_sensor = None
     mmu.filament_motion_sensor = None
@@ -76,12 +76,12 @@ def make_mmu(cutter: bool = False, hot: bool = True) -> MMU:
     mmu.gcode = types.SimpleNamespace(run_script_from_command=run_script_from_command)
     mmu.toolhead = types.SimpleNamespace(wait_moves=lambda: None)
 
-    def unselect_tool() -> bool:
-        mmu.calls.append(("unselect", mmu.current_tool))
-        mmu.current_tool = None
+    def unselect_gate() -> bool:
+        mmu.calls.append(("unselect", mmu.current_gate))
+        mmu.current_gate = None
         return True
 
-    mmu.unselect_tool = unselect_tool
+    mmu.unselect_gate = unselect_gate
     return mmu
 
 
@@ -95,7 +95,7 @@ def test_form_tip_rams_and_leaves_the_filament_in_the_hotend() -> None:
     assert mmu.cmd_mmu_form_tip(None) is True
     assert macro_calls(mmu) == [("_MMU_FORM_TIP", ACTION_FORMING_TIP)]
     assert mmu.filament_pos == FilamentPos.IN_HOTEND
-    assert mmu.current_filament == 1
+    assert mmu.loaded_gate == 1
     assert mmu.action == ACTION_IDLE
     assert mmu.calls[-1] == ("steppers_off",)
 
@@ -178,7 +178,7 @@ def test_refused_when_disabled() -> None:
 
 def test_the_idler_is_parked_first() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 1
+    mmu.current_gate = 1
     assert mmu.form_tip_standalone() is True
     assert mmu.calls.index(("unselect", 1)) < mmu.calls.index(
         ("macro", "_MMU_FORM_TIP", ACTION_FORMING_TIP)

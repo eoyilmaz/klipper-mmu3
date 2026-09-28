@@ -522,6 +522,31 @@ gcode:
     {% endif %}
 ```
 
+### Tools and gates
+
+As in Happy Hare, a **tool** is what the slicer asks for (`T0`, `T1`, ...,
+`MMU_CHANGE_TOOL TOOL=`) and a **gate** is a physical lane of the MMU, where a
+spool is fed in. The MMU3 always loads gate `n` for tool `n`.
+
+Your own macros can read the selected and the loaded gate from
+`printer.mmu.current_gate` and `printer.mmu.loaded_gate` (`None` if there is
+none). The old names `printer.mmu.current_tool` and
+`printer.mmu.current_filament` still work and have the same values, but use
+the new ones in new macros. Happy Hare's `printer.mmu.gate` and
+`printer.mmu.tool` are reported too.
+
+`GET_MMU_PARAM` / `SET_MMU_PARAM` use the new names as well:
+`PARAM=current_gate` / `PARAM=loaded_gate` instead of `PARAM=current_tool` /
+`PARAM=current_filament`. The config options (`number_of_tools`, ...) keep
+their names.
+
+The "Select Tool" and "Unselect Tool" entries of the LCD menu are now "Select
+Gate" / "Unselect Gate" (with `Gate 0`, `Gate 1`, ... entries, also under
+"Preload Filament to Finda"), and "Unload Tool" / "Eject Tool" are "Unload" /
+"Eject". If you override these menus, use the new IDs (`__select_gate __gate0`,
+`__unselect_gate`, `__unload`, `__eject`, `__preload_filament_to_finda
+__gate0`).
+
 ## Mainsail / Fluidd MMU Panel & Spoolman
 
 Mainsail (v2.15 and later) and Fluidd (v1.34 and later) ship an MMU panel built

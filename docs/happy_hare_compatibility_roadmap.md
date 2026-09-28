@@ -11,16 +11,17 @@ value versus effort; items inside a phase are independent unless noted.
 
 ## Terminology
 
-Happy Hare separates two ideas that the MMU3 extension currently treats as one:
+Happy Hare separates two ideas, and so does the MMU3 extension since
+[#62](https://github.com/eoyilmaz/klipper-mmu3/issues/62):
 
 | Happy Hare | Meaning | MMU3 today |
 |---|---|---|
 | **tool** | What the slicer / G-code asks for (`T0`…`Tn`, `MMU_CHANGE_TOOL TOOL=`) | `tool` |
-| **gate** | A physical lane of the MMU, where a spool is fed in | `tool` (`current_tool` is the selector position) |
+| **gate** | A physical lane of the MMU, where a spool is fed in | `gate` (`current_gate` is the selector position, `loaded_gate` the gate whose filament is in the path) |
 | **TTG map** | Tool-to-gate mapping, `Tn → gate m` | Fixed identity (`Tn → gate n`) |
 
-As long as the TTG map is the identity, one name is enough. Phase 3 introduces real remapping and
-is where the tool / gate split becomes necessary.
+The TTG map is still the identity, the places that turn a tool into a gate (`cmd_tx`, `cmd_kx`,
+`track_operation`, `MmuStatus.tool()`) are commented, that is where the TTG map goes in.
 
 ## Status Legend
 
@@ -141,11 +142,17 @@ Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macro
 
 The largest change. Needed before any feature where tool `n` is not gate `n`.
 
-- [ ] **Separate tool and gate internally.**
-  ([#62](https://github.com/eoyilmaz/klipper-mmu3/issues/62)) Rename the physical side to `gate`:
-  selector position (`current_tool` → `current_gate`), gate map, FINDA checks, `tool_mapping`. Keep
-  `tool` for what the slicer asks for. Do it as a pure rename first (no behaviour change), with the
-  tests green, before any other Phase 3 item.
+- [x] **Separate tool and gate internally.**
+  ([#62](https://github.com/eoyilmaz/klipper-mmu3/issues/62)) Renamed the physical side to `gate`
+  (no behaviour change): `current_tool` → `current_gate`, `current_filament` → `loaded_gate`,
+  `select_tool` / `unselect_tool` / `load_tool` / `unload_tool` → `*_gate`. `Tn`, `Kn`,
+  `MMU_CHANGE_TOOL` and `Operation.from_tool` / `to_tool` (the stats' tool change tally) stay tools.
+  `printer.mmu` reports `current_gate` / `loaded_gate` and still the old `current_tool` /
+  `current_filament`. Config options keep their names (`number_of_tools`, ...), so
+  `SET_MMU_PARAM` still finds them; `PARAM=current_tool` / `current_filament` is now
+  `current_gate` / `loaded_gate`. The gate side LCD menu
+  IDs are renamed (`__select_gate __gate0`, `__unselect_gate`, `__unload`, `__eject`, ...) and the
+  "Unload Tool" button / menu entry is "Unload" (all documented in the README).
 - [ ] **TTG map.** ([#63](https://github.com/eoyilmaz/klipper-mmu3/issues/63)) Persist a `ttg_map`
   with `save_variables`, report it in `get_status()`, and resolve `Tn` / `MMU_CHANGE_TOOL TOOL=n`
   through it. Implement `MMU_TTG_MAP` (show / set / reset) and `MMU_REMAP_TTG`. Mainsail's tool

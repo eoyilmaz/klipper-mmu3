@@ -99,8 +99,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.spoolman_support = SPOOLMAN_READONLY
     mmu._active_spool_id = -1
     mmu._spoolman_error_reported = False
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.action = ACTION_IDLE
     mmu.messages = []
@@ -114,8 +114,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
 
 def load(mmu: MMU, gate: int) -> None:
     """Pretend ``gate`` is fully loaded."""
-    mmu.current_tool = gate
-    mmu.current_filament = gate
+    mmu.current_gate = gate
+    mmu.loaded_gate = gate
     mmu.filament_pos = FilamentPos.LOADED
 
 
@@ -154,7 +154,7 @@ def test_sync_clears_spool_on_unload() -> None:
     load(mmu, 1)
     mmu.sync_active_spool()
     mmu.filament_pos = FilamentPos.UNLOADED
-    mmu.current_filament = None
+    mmu.loaded_gate = None
     mmu.sync_active_spool()
     assert spool_calls(mmu) == [7, None]
 
@@ -178,7 +178,7 @@ def test_sync_clears_spool_on_startup_when_nothing_loaded() -> None:
 def test_spool_active_once_filament_reaches_extruder(pos, expected) -> None:
     mmu = make_mmu()
     mmu.gate_map.update(1, spool_id=7)
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
     mmu.filament_pos = pos
     mmu.sync_active_spool()
     assert spool_calls(mmu) == [expected]
@@ -310,7 +310,7 @@ def test_gate_map_command_reset() -> None:
 def test_gate_map_command_prints_map() -> None:
     mmu = make_mmu()
     mmu.gate_map.update(1, material="PETG", spool_id=7, status=GATE_AVAILABLE)
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
     mmu.cmd_mmu_gate_map(FakeGCmd())
     assert "Gate 1: PETG spool=7 [available] <- loaded" in mmu.messages[0]
 
@@ -361,7 +361,7 @@ def test_running_action_restores_on_error() -> None:
 def make_planner_mmu(seen: list) -> MMU:
     """Build an MMU3 whose load / unload steps record the reported action."""
     mmu = make_mmu()
-    mmu.current_tool = 1
+    mmu.current_gate = 1
 
     def step(pos: FilamentPos):
         def run() -> bool:
@@ -403,7 +403,7 @@ def test_unload_reports_action_per_step() -> None:
 
 def test_failed_step_restores_idle() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 1
+    mmu.current_gate = 1
     mmu._load_path = lambda: [(FilamentPos.AT_FINDA, lambda: False, ACTION_LOADING)]
     assert mmu._load_toward(FilamentPos.LOADED, 1) is False
     assert mmu.action == ACTION_IDLE
@@ -413,10 +413,10 @@ def test_failed_step_restores_idle() -> None:
 # MMU_SELECT
 # ---------------------------------------------------------------------------
 def make_select_mmu() -> MMU:
-    """Build an MMU3 whose ``cmd_select_tool`` only records the call."""
+    """Build an MMU3 whose ``cmd_select_gate`` only records the call."""
     mmu = make_mmu()
     mmu.selected = []
-    mmu.cmd_select_tool = lambda gcmd: mmu.selected.append(gcmd) or True
+    mmu.cmd_select_gate = lambda gcmd: mmu.selected.append(gcmd) or True
     return mmu
 
 

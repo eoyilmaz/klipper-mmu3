@@ -399,10 +399,10 @@ def measure_duration(f: Callable) -> Callable:
         # condition the function name
         f_name = {
             "cmd_tx": "T",
-            "cmd_load_tool": "MMU_LOAD",
-            "cmd_unload_tool": "MMU_UNLOAD",
-            "cmd_select_tool": "MMU_SELECT",
-            "cmd_unselect_tool": "MMU_UNSELECT",
+            "cmd_load_gate": "MMU_LOAD",
+            "cmd_unload_gate": "MMU_UNLOAD",
+            "cmd_select_gate": "MMU_SELECT",
+            "cmd_unselect_gate": "MMU_UNSELECT",
             "cmd_calibrate_pulley_rotation_distance": (
                 "MMU_CALIBRATE_PULLEY_ROTATION_DISTANCE"
             ),
@@ -430,7 +430,7 @@ def auto_pause(f: Callable) -> Callable:
     ``pending_operation``. Of the recovery dialog's buttons (see
     :meth:`MMU.show_recovery_prompt`), only "Retry" and "Resume" close it
     (via the ``PROMPT_CLOSE_AND_RUN_COMMAND`` macro sending
-    ``action:prompt_end``); "Unlock MMU", "Unload Tool" and "Home MMU" run
+    ``action:prompt_end``); "Unlock MMU", "Unload" and "Home MMU" run
     their gcode with the dialog left open server-side, so a *successful* run
     of one of those must not re-send the prompt - Mainsail visibly closes and
     reopens an already-open dialog when it receives a fresh
@@ -513,9 +513,10 @@ def track_operation(kind: OperationKind) -> Callable:
                 # MMU_LOAD without a gate loads the selected one
                 with contextlib.suppress(Exception):
                     to_tool = self.default_gate()
+            # tool n is gate n on the MMU3, so the loaded gate is the tool
             operation = Operation(
                 kind=kind,
-                from_tool=self.current_filament,
+                from_tool=self.loaded_gate,
                 to_tool=to_tool,
             )
             self.current_operation = operation
@@ -1070,8 +1071,12 @@ class MMU:
         self.is_homed = False
         self.is_enabled = True
         self.extruder_temp = None
-        self.current_tool = None
-        self.current_filament = None
+        # A gate is a physical lane of the MMU, a tool is what the slicer asks
+        # for (Tn). Tool n is gate n on the MMU3 (no tool to gate remapping).
+        # the gate the selector / idler is at
+        self.current_gate = None
+        # the gate whose filament is in the path (FINDA or further)
+        self.loaded_gate = None
         # how far the filament tip has moved from the MMU toward the nozzle
         self.filament_pos = FilamentPos.UNLOADED
         # FINDA's state, kept current by the MCU reporting every change of
@@ -1097,10 +1102,6 @@ class MMU:
         # are we in debug mode
         self.debug = config.getboolean("debug", False)
         self.number_of_tools = config.getint("number_of_tools", 5)
-        self.tool_mapping = config.getintlist(
-            "tool_mapping",
-            list(range(self.number_of_tools)),
-        )
 
         # per gate filament metadata, persisted via save_variables
         self.gate_map = GateMap(self.number_of_tools)
@@ -1423,7 +1424,7 @@ class MMU:
         if self.spoolman_support == SPOOLMAN_OFF:
             return
         spool_id = None
-        gate = self.current_filament
+        gate = self.loaded_gate
         if self.filament_pos >= FilamentPos.AT_EXTRUDER and self.gate_map.is_valid_gate(
             gate
         ):
@@ -1620,8 +1621,12 @@ class MMU:
         status.update(
             {
                 "is_enabled": self.is_enabled,
-                "current_tool": self.current_tool,
-                "current_filament": self.current_filament,
+                "current_gate": self.current_gate,
+                "loaded_gate": self.loaded_gate,
+                # the pre tool / gate split names of current_gate and
+                # loaded_gate, kept for user macros that read them
+                "current_tool": self.current_gate,
+                "current_filament": self.loaded_gate,
                 "filament_pos_name": self.filament_pos.name,
                 "pending_operation": (
                     self.pending_operation.describe()
@@ -1676,7 +1681,7 @@ class MMU:
             ("MMU_HOME", self.cmd_home_mmu, "Home the idler and the selector"),
             ("HOME_IDLER", self.cmd_home_idler, "Home the idler only"),
             ("MMU_SELECT", self.cmd_mmu_select, "Select a gate (GATE= / TOOL=)"),
-            ("MMU_UNSELECT", self.cmd_unselect_tool, "Park the idler"),
+            ("MMU_UNSELECT", self.cmd_unselect_gate, "Park the idler"),
             (
                 "MMU_CHANGE_TOOL",
                 self.cmd_mmu_change_tool,
@@ -1825,17 +1830,6 @@ class MMU:
         registered in :meth:`register_commands`.
         """
         self.printer.add_object("mmu_machine", MmuMachine(self))
-
-    def get_mapped_tool_id(self, tool_id: int) -> int:
-        """Return the mapped tool id.
-
-        Args:
-            tool_id (int): The original tool id.
-
-        Returns:
-            int: The mapped tool id.
-        """
-        return self.tool_mapping[tool_id]
 
     def get_endstop(self, endstop_name: str) -> None | MCU_endstop:
         """Return the endstop with the given name.
@@ -2065,7 +2059,7 @@ class MMU:
         self.idler_stepper.do_set_position(0)
 
         # park
-        self.unselect_tool()
+        self.unselect_gate()
 
         self.respond_debug("Finished homing")
 
@@ -2147,10 +2141,10 @@ class MMU:
             self.toolhead.wait_moves()
             self.selector_stepper.do_set_position(0)
 
-        self.current_tool = None
-        self.current_filament = None
+        self.current_gate = None
+        self.loaded_gate = None
         self.filament_pos = FilamentPos.UNLOADED
-        self.unselect_tool()
+        self.unselect_gate()
         self.is_homed = True
         self.respond_debug("Homing MMU ended ...")
 
@@ -2300,8 +2294,8 @@ class MMU:
         FINDA and filament switch sensor allow (see
         :meth:`_switch_sensor_bounds`), so it can neither claim more progress
         than the sensors support nor keep stale progress the sensors have
-        ruled out, and reconciles ``self.current_filament``. This replaces the
-        ad-hoc ``current_filament``-from-FINDA fixups scattered through the
+        ruled out, and reconciles ``self.loaded_gate``. This replaces the
+        ad-hoc ``loaded_gate``-from-FINDA fixups scattered through the
         unload helpers.
 
         Returns:
@@ -2314,15 +2308,15 @@ class MMU:
         self.filament_pos = min(max(self.filament_pos, floor), ceiling)
 
         if self.filament_pos == FilamentPos.UNLOADED:
-            self.current_filament = None
-        elif self.current_filament is None:
-            # filament is somewhere in the path; best guess is the selected tool
-            self.current_filament = self.current_tool
+            self.loaded_gate = None
+        elif self.loaded_gate is None:
+            # filament is somewhere in the path; best guess is the selected gate
+            self.loaded_gate = self.current_gate
 
         self.respond_debug(
             f"assess_filament_pos: FINDA={in_finda} switch={in_switch} "
             f"pos={self.filament_switch_sensor_position} "
-            f"-> {self.filament_pos} (filament T{self.current_filament})"
+            f"-> {self.filament_pos} (filament T{self.loaded_gate})"
         )
         return self.filament_pos
 
@@ -2359,7 +2353,7 @@ class MMU:
         ]
 
     def move_filament_to(
-        self, target_pos: FilamentPos, tool_id: None | int = None
+        self, target_pos: FilamentPos, gate: None | int = None
     ) -> bool:
         """Run only the sub-steps between the current position and ``target_pos``.
 
@@ -2369,9 +2363,9 @@ class MMU:
 
         Args:
             target_pos (FilamentPos): The position to reach.
-            tool_id (None | int): Tool to select before any forward move.
-                Defaults to ``current_tool``; unload sub-steps auto-select from
-                ``current_filament``.
+            gate (None | int): Gate to select before any forward move.
+                Defaults to ``current_gate``; unload sub-steps auto-select from
+                ``loaded_gate``.
 
         Returns:
             bool: True if ``filament_pos`` reached ``target_pos``.
@@ -2381,20 +2375,20 @@ class MMU:
         if self.filament_pos == target_pos:
             return True
         if target_pos > self.filament_pos:
-            return self._load_toward(target_pos, tool_id)
+            return self._load_toward(target_pos, gate)
         return self._unload_toward(target_pos)
 
-    def _load_toward(self, target_pos: FilamentPos, tool_id: None | int) -> bool:
+    def _load_toward(self, target_pos: FilamentPos, gate: None | int) -> bool:
         """Run the forward sub-steps needed to reach ``target_pos``."""
-        if tool_id is None:
-            tool_id = self.current_tool
-        if tool_id is None:
-            self.display_status_msg("Cannot load, no tool selected!")
+        if gate is None:
+            gate = self.current_gate
+        if gate is None:
+            self.display_status_msg("Cannot load, no gate selected!")
             return False
         if (
             self.filament_pos <= FilamentPos.AT_FINDA
-            and self.current_tool != tool_id
-            and not self.select_tool(tool_id)
+            and self.current_gate != gate
+            and not self.select_gate(gate)
         ):
             return False
         for reached_pos, step_fn, action in self._load_path():
@@ -2417,7 +2411,7 @@ class MMU:
         """Whether the current filament state satisfies ``pending_operation``.
 
         Used by :func:`track_operation` so that an unrelated command
-        succeeding - e.g. clicking "Unload Tool" or "Home MMU" in the
+        succeeding - e.g. clicking "Unload" or "Home MMU" in the
         recovery dialog to manually work on a stuck filament - does not
         silently discard a still-unfinished ``pending_operation``. Only
         actually reaching the position (and, for loads, the tool) the
@@ -2432,9 +2426,7 @@ class MMU:
             return True
         if op.target_pos == FilamentPos.UNLOADED:
             return self.filament_pos == FilamentPos.UNLOADED
-        return (
-            self.filament_pos >= op.target_pos and self.current_filament == op.to_tool
-        )
+        return self.filament_pos >= op.target_pos and self.loaded_gate == op.to_tool
 
     def retry_pending_operation(self) -> bool:
         """Re-drive ``self.pending_operation`` after checking the sensors.
@@ -2460,11 +2452,11 @@ class MMU:
             elif op.kind == OperationKind.CUT and op.to_tool is not None:
                 ok = self.cut_filament_in_mmu(op.to_tool)
             elif op.kind == OperationKind.TOOL_CHANGE and op.to_tool is not None:
-                ok = self.unload_tool() and self.load_tool(op.to_tool)
+                ok = self.unload_gate() and self.load_gate(op.to_tool)
             elif op.kind == OperationKind.LOAD and op.to_tool is not None:
-                ok = self.load_tool(op.to_tool)
+                ok = self.load_gate(op.to_tool)
             else:  # UNLOAD / EJECT / degenerate TOOL_CHANGE
-                ok = self.unload_tool()
+                ok = self.unload_gate()
         finally:
             self.is_paused = not ok
 
@@ -2493,7 +2485,7 @@ class MMU:
                 ButtonGroup(
                     buttons=[
                         Button(label="Unlock MMU", gcode="MMU_UNLOCK"),
-                        Button(label="Unload Tool", gcode="MMU_UNLOAD"),
+                        Button(label="Unload", gcode="MMU_UNLOAD"),
                     ],
                 ),
                 ButtonGroup(
@@ -2527,14 +2519,14 @@ class MMU:
         return self.home_idler()
 
     @reports_action(ACTION_SELECTING)
-    def select_tool(self, tool_id: int) -> bool:
-        """Select a tool. move the idler and then move the selector (if needed).
+    def select_gate(self, gate: int) -> bool:
+        """Select a gate. move the idler and then move the selector (if needed).
 
         Args:
-            tool_id (int): The tool id.
+            gate (int): The gate.
 
         Returns:
-            bool: True, if tool is selected, False otherwise.
+            bool: True, if the gate is selected, False otherwise.
         """
         if self.is_paused:
             return False
@@ -2544,20 +2536,20 @@ class MMU:
             if not self.home_mmu():
                 return False
 
-        if tool_id is None or tool_id < 0:
-            self.display_status_msg(f"Invalid tool id: {tool_id}")
+        if gate is None or gate < 0:
+            self.display_status_msg(f"Invalid gate: {gate}")
             return False
 
-        if self.is_filament_in_finda() and self.current_filament is None:
+        if self.is_filament_in_finda() and self.loaded_gate is None:
             self.display_status_msg(
                 "Filament detected in FINDA, "
-                "please unload it manually before selecting a tool."
+                "please unload it manually before selecting a gate."
             )
             return False
 
-        self.respond_debug(f"Select Tool {tool_id} ...")
+        self.respond_debug(f"Select gate {gate} ...")
         self.idler_stepper.do_move(
-            self.idler_positions[tool_id],
+            self.idler_positions[gate],
             self.idler_speed,
             self.idler_accel,
             sync=False,
@@ -2565,19 +2557,19 @@ class MMU:
 
         if not self.enable_no_selector_mode:
             self.selector_stepper.do_move(
-                self.selector_positions[tool_id],
+                self.selector_positions[gate],
                 self.selector_speed,
                 self.selector_accel,
             )
-        self.current_tool = tool_id
-        self.respond_debug(f"Tool {tool_id} Enabled")
+        self.current_gate = gate
+        self.respond_debug(f"Gate {gate} selected")
         return True
 
-    def unselect_tool(self) -> bool:
-        """Unselect a tool, only park the idler.
+    def unselect_gate(self) -> bool:
+        """Unselect the gate, only park the idler.
 
         Returns:
-            bool: True, if tool is unselected, False otherwise.
+            bool: True, if the gate is unselected, False otherwise.
         """
         if self.is_paused:
             return False
@@ -2587,10 +2579,10 @@ class MMU:
             if not self.home_mmu():
                 return False
 
-        if self.current_tool is not None:
-            self.respond_debug(f"Unselecting Tool T{self.current_tool}")
+        if self.current_gate is not None:
+            self.respond_debug(f"Unselecting gate {self.current_gate}")
         else:
-            self.respond_debug("Unselecting tool while Current Tool is None!")
+            self.respond_debug("Unselecting while no gate is selected!")
 
         self.idler_stepper.do_move(
             self.idler_positions[-1],
@@ -2598,8 +2590,8 @@ class MMU:
             self.idler_accel,
             sync=False,
         )
-        self.current_tool = None
-        self.respond_debug("Unselect Tool is complete!")
+        self.current_gate = None
+        self.respond_debug("Unselect gate is complete!")
         return True
 
     def retry_load_filament_to_hotend(self) -> bool:
@@ -2672,7 +2664,7 @@ class MMU:
             for _ in range(self.load_retry):
                 self.retry_load_filament_to_hotend()
 
-        self.unselect_tool()
+        self.unselect_gate()
 
         if not self.is_filament_in_switch_sensor():
             self.respond_debug("Filament is not in switch sensor after load!")
@@ -2728,12 +2720,12 @@ class MMU:
         if not self.validate_extruder_is_hot_enough():
             return False
 
-        if self.current_tool is None and self.current_filament is not None:
+        if self.current_gate is None and self.loaded_gate is not None:
             # keep the pulley able to help: without this the idler stays
             # parked and the pulley un-synced, so the extruder retracts
             # alone against filament that may still be pinched at the
             # selector.
-            self.select_tool(self.current_filament)
+            self.select_gate(self.loaded_gate)
 
         self.respond_debug("Unloading Filament...")
         with ExtruderSynchronizer(mmu=self, manual_stepper=self.pulley_stepper):
@@ -2765,12 +2757,12 @@ class MMU:
             self.filament_pos = min(self.filament_pos, FilamentPos.AT_EXTRUDER)
             return True
 
-        if self.current_tool is None and self.current_filament is not None:
+        if self.current_gate is None and self.loaded_gate is not None:
             # keep the pulley able to help: without this the idler stays
             # parked and the pulley un-synced, so the extruder retracts
             # alone against filament that may still be pinched at the
             # selector.
-            self.select_tool(self.current_filament)
+            self.select_gate(self.loaded_gate)
 
         if not self.validate_extruder_is_hot_enough():
             return False
@@ -2844,7 +2836,7 @@ class MMU:
             return False
         if not self.validate_extruder_is_hot_enough():
             return False
-        if self.current_tool is not None and not self.unselect_tool():
+        if self.current_gate is not None and not self.unselect_gate():
             return False
 
         with (
@@ -2886,10 +2878,10 @@ class MMU:
         if not self.validate_extruder_is_hot_enough():
             return False
 
-        if self.current_tool is not None:
-            self.respond_debug(f"Tool T{self.current_tool} selected!")
-            self.respond_debug(f"Auto unselecting T{self.current_tool}")
-            self.unselect_tool()
+        if self.current_gate is not None:
+            self.respond_debug(f"Gate {self.current_gate} selected!")
+            self.respond_debug(f"Auto unselecting gate {self.current_gate}")
+            self.unselect_gate()
 
         self.respond_debug("Ramming and Unloading Filament...")
 
@@ -2967,8 +2959,8 @@ class MMU:
         if self.is_paused:
             return False
 
-        if self.current_tool is None:
-            self.display_status_msg("Select a tool before calibrating bowden length!")
+        if self.current_gate is None:
+            self.display_status_msg("Select a gate before calibrating bowden length!")
             return False
 
         if self.filament_switch_sensor is None:
@@ -3066,7 +3058,7 @@ class MMU:
             return False
 
         self.respond_debug(f"Pre-loading T{gate}")
-        self.select_tool(gate)
+        self.select_gate(gate)
         if not self.load_filament_to_finda():
             return False
         return self.unload_filament_from_finda()
@@ -3091,12 +3083,12 @@ class MMU:
         if self.is_paused:
             return False
 
-        previous_tool = self.current_tool
+        previous_gate = self.current_gate
         results = {}
         try:
             for gate in gates:
                 self.respond_debug(f"Checking gate {gate}")
-                if not self.select_tool(gate):
+                if not self.select_gate(gate):
                     return False
                 if not self.load_filament_to_finda():
                     results[gate] = GATE_EMPTY
@@ -3104,8 +3096,8 @@ class MMU:
                 results[gate] = GATE_AVAILABLE
                 if not self.unload_filament_from_finda():
                     return False
-            if previous_tool is not None and previous_tool != self.current_tool:
-                return self.select_tool(previous_tool)
+            if previous_gate is not None and previous_gate != self.current_gate:
+                return self.select_gate(previous_gate)
             return True
         finally:
             if results and not quiet:
@@ -3129,14 +3121,14 @@ class MMU:
         if self.is_paused:
             return False
 
-        if self.current_tool is None:
-            self.display_status_msg("Cannot load to FINDA, tool not selected !!")
+        if self.current_gate is None:
+            self.display_status_msg("Cannot load to FINDA, gate not selected !!")
             return False
 
         if self.enable_no_selector_mode:
-            # no per-tool FINDA stage in 5in1 mode - the spool feeds straight
+            # no per-gate FINDA stage in 5in1 mode - the spool feeds straight
             # to the extruder, mirroring load_filament_to_extruder()
-            self.current_filament = self.current_tool
+            self.loaded_gate = self.current_gate
             self.filament_pos = max(self.filament_pos, FilamentPos.AT_FINDA)
             return True
 
@@ -3144,16 +3136,16 @@ class MMU:
         if not self.load_filament_to_finda_in_loop():
             self.pulley_stepper.do_set_position(0)
             # nothing reached FINDA, the gate has run out of filament
-            self.set_gate_status(self.current_tool, GATE_EMPTY)
+            self.set_gate_status(self.current_gate, GATE_EMPTY)
             return False
 
         self.pulley_stepper.do_set_position(0)
-        self.set_gate_status(self.current_tool, GATE_AVAILABLE)
+        self.set_gate_status(self.current_gate, GATE_AVAILABLE)
 
         # if not self.is_filament_in_finda():
         #     return False
 
-        self.current_filament = self.current_tool
+        self.loaded_gate = self.current_gate
         self.filament_pos = max(self.filament_pos, FilamentPos.AT_FINDA)
         self.respond_debug("Loading done to FINDA")
         return True
@@ -3173,8 +3165,8 @@ class MMU:
         if self.is_paused:
             return False
 
-        if self.current_tool is None:
-            self.display_status_msg("Tool not selected!")
+        if self.current_gate is None:
+            self.display_status_msg("Gate not selected!")
             return False
 
         self.respond_debug("Loading filament from FINDA to extruder ...")
@@ -3258,8 +3250,8 @@ class MMU:
         if self.is_paused:
             return False
 
-        if self.current_tool is None:
-            self.display_status_msg("Tool not selected, cannot load to extruder!")
+        if self.current_gate is None:
+            self.display_status_msg("Gate not selected, cannot load to extruder!")
             return False
 
         self.respond_debug("Loading filament from MMU to extruder ...")
@@ -3285,17 +3277,17 @@ class MMU:
             return False
 
         if self.enable_no_selector_mode:
-            # no per-tool FINDA stage in 5in1 mode
-            self.current_filament = None
+            # no per-gate FINDA stage in 5in1 mode
+            self.loaded_gate = None
             self.filament_pos = FilamentPos.UNLOADED
             return True
 
-        if self.current_tool is None:
-            if self.current_filament is not None:
-                # Auto select tool
-                self.select_tool(self.current_filament)
+        if self.current_gate is None:
+            if self.loaded_gate is not None:
+                # Auto select the loaded gate
+                self.select_gate(self.loaded_gate)
             else:
-                self.display_status_msg("Tool not selected, cannot unload from FINDA!")
+                self.display_status_msg("Gate not selected, cannot unload from FINDA!")
                 return False
 
         self.respond_debug("Unloading filament from FINDA ...")
@@ -3317,7 +3309,7 @@ class MMU:
 
         if self.is_filament_in_finda():
             return False
-        self.current_filament = None
+        self.loaded_gate = None
         self.filament_pos = FilamentPos.UNLOADED
         self.respond_debug("Unloading done from FINDA")
         return True
@@ -3332,13 +3324,13 @@ class MMU:
         if self.is_paused:
             return False
 
-        if self.current_tool is None:
-            if self.current_filament is not None:
-                # Auto select tool
-                self.select_tool(self.current_filament)
+        if self.current_gate is None:
+            if self.loaded_gate is not None:
+                # Auto select the loaded gate
+                self.select_gate(self.loaded_gate)
             else:
                 self.display_status_msg(
-                    "Tool not selected, cannot unload from extruder to FINDA!"
+                    "Gate not selected, cannot unload from extruder to FINDA!"
                 )
                 return False
 
@@ -3431,13 +3423,13 @@ class MMU:
         if self.is_paused:
             return False
 
-        if self.current_tool is None:
-            if self.current_filament is not None:
-                # Auto select tool
-                self.select_tool(self.current_filament)
+        if self.current_gate is None:
+            if self.loaded_gate is not None:
+                # Auto select the loaded gate
+                self.select_gate(self.loaded_gate)
             else:
                 self.display_status_msg(
-                    "Tool not selected, cannot unload from extruder to MMU!"
+                    "Gate not selected, cannot unload from extruder to MMU!"
                 )
                 return False
 
@@ -3456,13 +3448,13 @@ class MMU:
         return True
 
     @reports_action(ACTION_CUTTING_FILAMENT)
-    def cut_filament_in_mmu(self, tool_id: int) -> bool:
+    def cut_filament_in_mmu(self, gate: int) -> bool:
         """Cut the filament in the MMU3.
 
         Perform the cut from right to left.
 
         Args:
-            tool_id (int): The tool id.
+            gate (int): The gate.
 
         Returns:
             bool: True, if filament is cut, False otherwise.
@@ -3478,15 +3470,15 @@ class MMU:
             self.display_status_msg("Not supported in 5in1 mode!")
             return False
 
-        self.respond_debug(f"Cutting filament T{tool_id} ...")
+        self.respond_debug(f"Cutting filament T{gate} ...")
 
         # First unload filament
-        if not self.unload_tool():
-            self.display_status_msg("Apparently unload tool failed!")
+        if not self.unload_gate():
+            self.display_status_msg("Apparently unload failed!")
             return False
 
-        # Select tool
-        if not self.select_tool(tool_id):
+        # Select gate
+        if not self.select_gate(gate):
             return False
 
         # Feed to FINDA
@@ -3498,11 +3490,11 @@ class MMU:
             return False
 
         # Prepare blade
-        # - move the idler to the current tool position,
+        # - move the idler to the current gate position,
         #   to keep the filament tight in place.
         # - move the selector to the 0 position
         self.idler_stepper.do_move(
-            self.idler_positions[tool_id],
+            self.idler_positions[gate],
             self.idler_homing_speed,
             self.idler_homing_accel,
         )
@@ -3537,7 +3529,7 @@ class MMU:
 
         # do cut
         self.selector_stepper.do_move(
-            self.selector_positions[tool_id],
+            self.selector_positions[gate],
             self.selector_homing_speed,
             0,
         )
@@ -3560,14 +3552,14 @@ class MMU:
         # Home the mmu
         self.home_mmu()
 
-        self.respond_debug(f"Done cutting T{tool_id}!")
+        self.respond_debug(f"Done cutting T{gate}!")
         return True
 
-    def load_tool(self, tool_id: int) -> bool:
+    def load_gate(self, gate: int) -> bool:
         """Load filament from MMU3 to nozzle.
 
         Args:
-            tool_id (int): The tool id.
+            gate (int): The gate.
 
         Returns:
             bool: True, if filament is loaded, False otherwise.
@@ -3578,51 +3570,47 @@ class MMU:
         if not self.validate_extruder_is_hot_enough():
             return False
 
-        self.respond_debug(f"MMU_LOAD {tool_id}")
+        self.respond_debug(f"MMU_LOAD {gate}")
         if self.filament_pos == FilamentPos.LOADED:
             # nothing to load, so no load hooks either
-            return self.move_filament_to(FilamentPos.LOADED, tool_id)
+            return self.move_filament_to(FilamentPos.LOADED, gate)
         if not self.run_user_macro(PRE_LOAD_MACRO):
             return False
-        if self.filament_pos < FilamentPos.AT_EXTRUDER and not self.select_tool(
-            tool_id
-        ):
+        if self.filament_pos < FilamentPos.AT_EXTRUDER and not self.select_gate(gate):
             return False
         # planner runs only the steps still needed to reach LOADED, so a retry
         # after a mid-load failure does not repeat the whole bowden move
-        if not self.move_filament_to(FilamentPos.LOADED, tool_id):
+        if not self.move_filament_to(FilamentPos.LOADED, gate):
             return False
         return self.run_user_macro(POST_LOAD_MACRO)
 
-    def unload_tool(self) -> bool:
+    def unload_gate(self) -> bool:
         """Unload filament from nozzle to MMU3.
 
         Returns:
-            bool: True, if tool is unloaded, False otherwise.
+            bool: True, if the filament is unloaded, False otherwise.
         """
         if self.is_paused:
-            self.respond_debug("MMU is paused, cannot unload tool!")
+            self.respond_debug("MMU is paused, cannot unload!")
             return False
 
-        if self.current_filament is None:
+        if self.loaded_gate is None:
             self.respond_debug("Current filament is None!")
             if self.is_filament_in_finda():
                 self.respond_debug("But there is a filament in FINDA!")
-                if self.current_tool is None:
-                    self.respond_debug("Current Tool is also None!")
+                if self.current_gate is None:
+                    self.respond_debug("Current gate is also None!")
                     self.respond_debug("Cancelling unload!!!")
                     return False
-                self.respond_debug(f"Current Tool is {self.current_tool}")
-                self.current_filament = self.current_tool
-                self.respond_debug(
-                    f"Also setting Current filament to {self.current_filament}"
-                )
+                self.respond_debug(f"Current gate is {self.current_gate}")
+                self.loaded_gate = self.current_gate
+                self.respond_debug(f"Also setting loaded gate to {self.loaded_gate}")
                 return True
             # filament is not in FINDA
             self.respond_debug("And no filament in FINDA")
             self.respond_debug("No need to unload!")
             return True
-        self.respond_debug(f"Current filament is T{self.current_filament}")
+        self.respond_debug(f"Loaded gate is T{self.loaded_gate}")
 
         # nothing to unload, so no unload hooks either
         run_hooks = self.filament_pos > FilamentPos.UNLOADED
@@ -3630,12 +3618,12 @@ class MMU:
             return False
 
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
-            self.respond_debug(f"Cut T{self.current_filament}")
+            self.respond_debug(f"Cut T{self.loaded_gate}")
             self.cut_tip()
 
-        self.respond_debug(f"MMU_UNLOAD {self.current_filament}")
+        self.respond_debug(f"MMU_UNLOAD {self.loaded_gate}")
         # planner runs only the steps still needed to reach UNLOADED
-        if not self.move_filament_to(FilamentPos.UNLOADED, self.current_filament):
+        if not self.move_filament_to(FilamentPos.UNLOADED, self.loaded_gate):
             return False
         return not run_hooks or self.run_user_macro(POST_UNLOAD_MACRO)
 
@@ -3886,10 +3874,12 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        previous_filament = self.current_filament
+        # tool n is gate n on the MMU3
+        gate = tool_id
+        previous_gate = self.loaded_gate
 
-        if previous_filament is not None:
-            status_message = f"T{previous_filament} => T{tool_id}"
+        if previous_gate is not None:
+            status_message = f"T{previous_gate} => T{tool_id}"
         else:
             status_message = f"T{tool_id}"
         self.display_status_msg(status_message)
@@ -3898,7 +3888,7 @@ class MMU:
         # planner cannot skip steps because of stale state
         self.assess_filament_pos()
 
-        if self.current_filament == tool_id and self.filament_pos == FilamentPos.LOADED:
+        if self.loaded_gate == gate and self.filament_pos == FilamentPos.LOADED:
             return True
 
         with (
@@ -3928,29 +3918,29 @@ class MMU:
                     # on last try we'll home the mmu
                     self.home_idler()
 
-                if not self.unload_tool():
-                    self.respond_debug(f"Unload T{self.current_filament} failed!")
+                if not self.unload_gate():
+                    self.respond_debug(f"Unload T{self.loaded_gate} failed!")
                     continue
 
                 # if this is the last try, do a homing move as a last resort
                 if i == self.tool_change_retry - 1:
                     self.home_mmu()
 
-                if not self.load_tool(tool_id):
+                if not self.load_gate(gate):
                     self.respond_debug(f"Load T{tool_id} failed!")
                     continue
                 break
             else:
                 # all retries exhausted - auto_pause promotes the tracked
                 # operation to pending_operation and shows the recovery prompt
-                if previous_filament is not None:
-                    self.respond_debug(f"T{previous_filament} => T{tool_id} failed!")
+                if previous_gate is not None:
+                    self.respond_debug(f"T{previous_gate} => T{tool_id} failed!")
                 else:
                     self.respond_debug(f"T{tool_id} failed!")
                 return False
 
-        if previous_filament is not None:
-            self.respond_debug(f"Done T{previous_filament} => T{tool_id}")
+        if previous_gate is not None:
+            self.respond_debug(f"Done T{previous_gate} => T{tool_id}")
         else:
             self.respond_debug(f"Done T{tool_id}")
         return True
@@ -3968,6 +3958,7 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
+        # tool n is gate n on the MMU3
         return self.cut_filament_in_mmu(tool_id)
 
     @auto_disable_steppers
@@ -3988,7 +3979,7 @@ class MMU:
     @track_operation(OperationKind.LOAD)
     @measure_duration
     @auto_disable_steppers
-    def cmd_load_tool(self, gcmd: GCodeCommand) -> bool:
+    def cmd_load_gate(self, gcmd: GCodeCommand) -> bool:
         """Load filament from MMU3 to nozzle.
 
         Args:
@@ -3997,17 +3988,17 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        tool_id = get_gate_param(gcmd)
-        if tool_id is None:
-            tool_id = self.default_gate()
+        gate = get_gate_param(gcmd)
+        if gate is None:
+            gate = self.default_gate()
         self.assess_filament_pos()
-        return self.load_tool(tool_id)
+        return self.load_gate(gate)
 
     @auto_pause
     @track_operation(OperationKind.UNLOAD)
     @measure_duration
     @auto_disable_steppers
-    def cmd_unload_tool(self, gcmd: GCodeCommand) -> bool:
+    def cmd_unload_gate(self, gcmd: GCodeCommand) -> bool:
         """Unload filament from nozzle to MMU3.
 
         Args:
@@ -4033,13 +4024,13 @@ class MMU:
             ),
         ):
             self.assess_filament_pos()
-            return self.unload_tool()
+            return self.unload_gate()
 
     @auto_pause
     @measure_duration
     @auto_disable_steppers
-    def cmd_select_tool(self, gcmd: GCodeCommand) -> bool:
-        """Select a tool. move the idler and then move the selector (if needed).
+    def cmd_select_gate(self, gcmd: GCodeCommand) -> bool:
+        """Select a gate. move the idler and then move the selector (if needed).
 
         Args:
             gcmd (GCodeCommand): The G-code command.
@@ -4047,14 +4038,14 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        tool_id = get_gate_param(gcmd)
-        return self.select_tool(tool_id)
+        gate = get_gate_param(gcmd)
+        return self.select_gate(gate)
 
     @auto_pause
     @measure_duration
     @auto_disable_steppers
-    def cmd_unselect_tool(self, gcmd: GCodeCommand) -> bool:
-        """Unselect a tool, only park the idler.
+    def cmd_unselect_gate(self, gcmd: GCodeCommand) -> bool:
+        """Unselect the gate, only park the idler.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
@@ -4062,7 +4053,7 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        return self.unselect_tool()
+        return self.unselect_gate()
 
     def default_gate(self) -> None | int:
         """Return the gate a command without ``GATE=`` acts on.
@@ -4071,9 +4062,9 @@ class MMU:
             None | int: The selected gate, else the gate whose filament is in
                 the path, else None.
         """
-        if self.current_tool is not None:
-            return self.current_tool
-        return self.current_filament
+        if self.current_gate is not None:
+            return self.current_gate
+        return self.loaded_gate
 
     def cmd_not_supported(self, gcmd: GCodeCommand, name: str = "") -> bool:
         """Answer a Happy Hare command that has no MMU3 equivalent.
@@ -4142,7 +4133,7 @@ class MMU:
         if get_gate_param(gcmd) is None and self.default_gate() is None:
             self.respond_info("No gate selected, use MMU_LOAD GATE=<gate>.")
             return False
-        return self.cmd_load_tool(gcmd)
+        return self.cmd_load_gate(gcmd)
 
     def cmd_mmu_unload(self, gcmd: GCodeCommand) -> bool:
         """Unload the filament from the nozzle to the MMU3.
@@ -4156,7 +4147,7 @@ class MMU:
         if gcmd.get_int("EXTRUDER_ONLY", 0):
             self.respond_info("MMU_UNLOAD EXTRUDER_ONLY=1 is not supported on MMU3.")
             return False
-        return self.cmd_unload_tool(gcmd)
+        return self.cmd_unload_gate(gcmd)
 
     def cmd_mmu_eject(self, gcmd: GCodeCommand) -> bool:
         """Unload the filament back into its gate and park the idler.
@@ -4171,7 +4162,7 @@ class MMU:
             bool: True if command completed successfully, False otherwise.
         """
         gate = get_gate_param(gcmd)
-        if gate is not None and gate != self.current_filament:
+        if gate is not None and gate != self.loaded_gate:
             self.respond_info(f"Gate {gate} is not loaded, nothing to eject.")
             return True
         return self.cmd_m702(gcmd)
@@ -4194,15 +4185,15 @@ class MMU:
         gate = get_gate_param(gcmd)
         if (
             self.filament_pos != FilamentPos.UNLOADED
-            and self.current_filament is not None
-            and gate != self.current_filament
+            and self.loaded_gate is not None
+            and gate != self.loaded_gate
         ):
             self.respond_info(
-                f"T{self.current_filament} is loaded, unload it before "
+                f"T{self.loaded_gate} is loaded, unload it before "
                 f"selecting another gate."
             )
             return False
-        return self.cmd_select_tool(gcmd)
+        return self.cmd_select_gate(gcmd)
 
     def cmd_mmu_change_tool(self, gcmd: GCodeCommand) -> bool:
         """Change to a tool (``TOOL=``) or gate (``GATE=``), same as ``Tn``.
@@ -4232,13 +4223,13 @@ class MMU:
         """
         gate = get_gate_param(gcmd)
         if gate is None:
-            gate = self.current_tool
+            gate = self.current_gate
         if not self.gate_map.is_valid_gate(gate):
             self.respond_info("No gate selected, use MMU_PRELOAD GATE=<gate>.")
             return False
         if self.filament_pos != FilamentPos.UNLOADED:
             self.respond_info(
-                f"T{self.current_filament} is loaded, unload it before preloading."
+                f"T{self.loaded_gate} is loaded, unload it before preloading."
             )
             return False
         return self.cmd_preload_filament_to_finda(gcmd, gate=gate)
@@ -4279,9 +4270,9 @@ class MMU:
         if gates is None:
             if check_all:
                 return all_gates
-            if self.current_tool is None:
+            if self.current_gate is None:
                 return None
-            gates = [self.current_tool]
+            gates = [self.current_gate]
 
         for gate in gates:
             if not self.gate_map.is_valid_gate(gate):
@@ -4330,7 +4321,7 @@ class MMU:
             return False
         if self.filament_pos != FilamentPos.UNLOADED:
             self.respond_info(
-                f"T{self.current_filament} is loaded, unload it before checking gates."
+                f"T{self.loaded_gate} is loaded, unload it before checking gates."
             )
             return False
         if self.enable_no_selector_mode:
@@ -4382,20 +4373,20 @@ class MMU:
             if gate is not None:
                 if gate != -1 and not self.gate_map.is_valid_gate(gate):
                     raise gcmd.error(f"Invalid gate: {gate}")
-                self.current_filament = gate if gate >= 0 else None
+                self.loaded_gate = gate if gate >= 0 else None
             if loaded == 1:
-                if self.current_filament is None:
+                if self.loaded_gate is None:
                     raise gcmd.error("LOADED=1 needs a GATE=")
                 self.filament_pos = FilamentPos.LOADED
             elif loaded == 0:
                 self.filament_pos = FilamentPos.UNLOADED
-                self.current_filament = None
+                self.loaded_gate = None
 
         self.assess_filament_pos()
         self.sync_active_spool()
         self.respond_info(
             f"Filament position: {self.filament_pos}, filament: "
-            f"T{self.current_filament}, selected: T{self.current_tool}"
+            f"T{self.loaded_gate}, selected: T{self.current_gate}"
         )
         return True
 
@@ -4424,7 +4415,7 @@ class MMU:
         if self.action != ACTION_IDLE:
             self.respond_info(f"MMU is busy ({self.action}), runout ignored.")
             return True
-        gate = self.current_filament
+        gate = self.loaded_gate
         if gate is None or self.filament_pos != FilamentPos.LOADED:
             self.respond_info("No filament loaded, runout ignored.")
             return True
@@ -4534,7 +4525,7 @@ class MMU:
             if info.spool_id != NO_SPOOL:
                 parts.append(f"spool={info.spool_id}")
             parts.append(f"[{GATE_STATUS_TEXT.get(info.status, info.status)}]")
-            if gate == self.current_filament:
+            if gate == self.loaded_gate:
                 parts.append("<- loaded")
             lines.append(" ".join(str(p) for p in parts))
         self.respond_info("\n".join(lines))
@@ -4567,19 +4558,19 @@ class MMU:
                 self.toolhead,
             ),
         ):
-            if not self.unload_tool():
+            if not self.unload_gate():
                 return False
             if not self.enable_no_selector_mode:
                 if not self.is_filament_in_finda():
-                    if not self.unselect_tool():
+                    if not self.unselect_gate():
                         return False
                 else:
                     self.display_status_msg("M702 Error !!!")
                     return False
             else:
-                if not self.unselect_tool():
+                if not self.unselect_gate():
                     return False
-                self.current_filament = None
+                self.loaded_gate = None
             self.display_status_msg("M702 ok ...")
             return True
 
@@ -4716,16 +4707,16 @@ class MMU:
             bool: Always True.
         """
 
-        def tool_text(tool: None | int) -> str:
-            return "none" if tool is None else f"T{tool}"
+        def gate_text(gate: None | int) -> str:
+            return "none" if gate is None else f"T{gate}"
 
         lines = [
             "MMU status:",
             f"Enabled: {'yes' if self.is_enabled else 'no'}",
             f"Homed: {'yes' if self.is_homed else 'no'}",
             f"Paused: {'yes' if self.is_paused else 'no'}",
-            f"Selected gate: {tool_text(self.current_tool)}",
-            f"Loaded gate: {tool_text(self.current_filament)}",
+            f"Selected gate: {gate_text(self.current_gate)}",
+            f"Loaded gate: {gate_text(self.loaded_gate)}",
             f"Filament position: {self.filament_pos.name}",
             f"Action: {self.action}",
         ]
