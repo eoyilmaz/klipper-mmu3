@@ -74,8 +74,8 @@ def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
     mmu.is_enabled = True
     mmu.is_homed = True
     mmu.is_paused = False
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.current_operation = None
     mmu.pending_operation = None
@@ -86,19 +86,19 @@ def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
     mmu.paused = False
     mmu.empty_gates = set(empty_gates)
 
-    def select_tool(tool_id):
-        mmu.calls.append(("select", tool_id))
+    def select_gate(gate):
+        mmu.calls.append(("select", gate))
         assert mmu.action == ACTION_CHECKING
-        mmu.current_tool = tool_id
+        mmu.current_gate = gate
         return True
 
     def load_filament_to_finda_in_loop():
-        mmu.calls.append(("load", mmu.current_tool))
-        return mmu.current_tool not in mmu.empty_gates
+        mmu.calls.append(("load", mmu.current_gate))
+        return mmu.current_gate not in mmu.empty_gates
 
     def unload_filament_from_finda():
-        mmu.calls.append(("unload", mmu.current_tool))
-        mmu.current_filament = None
+        mmu.calls.append(("unload", mmu.current_gate))
+        mmu.loaded_gate = None
         mmu.filament_pos = FilamentPos.UNLOADED
         return True
 
@@ -111,7 +111,7 @@ def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
         def do_set_position(self, pos):
             pass
 
-    mmu.select_tool = select_tool
+    mmu.select_gate = select_gate
     mmu.load_filament_to_finda_in_loop = load_filament_to_finda_in_loop
     mmu.unload_filament_from_finda = unload_filament_from_finda
     mmu.pulley_stepper = FakeStepper()
@@ -150,7 +150,7 @@ def test_get_check_gates_param(params, check_all, expected) -> None:
 
 def test_check_gate_without_gate_uses_selected_gate() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 3
+    mmu.current_gate = 3
     assert mmu.get_check_gates_param(FakeGCmd(), check_all=False) == [3]
 
 
@@ -214,10 +214,10 @@ def test_check_gate_checks_only_the_given_gates() -> None:
 
 def test_check_gate_reselects_the_previous_gate() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 1
+    mmu.current_gate = 1
     assert mmu.cmd_mmu_check_gate(FakeGCmd(GATE=4)) is True
     assert mmu.calls[-1] == ("select", 1)
-    assert mmu.current_tool == 1
+    assert mmu.current_gate == 1
 
 
 def test_check_gate_without_selection_is_refused() -> None:
@@ -232,7 +232,7 @@ def test_check_gate_without_selection_is_refused() -> None:
 )
 def test_check_gates_refused_while_filament_is_loaded(pos) -> None:
     mmu = make_mmu()
-    mmu.current_filament = 2
+    mmu.loaded_gate = 2
     mmu.filament_pos = pos
     assert mmu.cmd_mmu_check_gates(FakeGCmd()) is False
     assert mmu.calls == []

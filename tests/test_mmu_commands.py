@@ -79,8 +79,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.is_enabled = True
     mmu.is_homed = False
     mmu.is_paused = False
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.action = ACTION_IDLE
     mmu.current_operation = None
@@ -219,8 +219,8 @@ def test_mmu_status_loaded_and_paused() -> None:
     mmu = make_mmu(num_tools=3)
     mmu.is_homed = True
     mmu.is_paused = True
-    mmu.current_tool = 2
-    mmu.current_filament = 1
+    mmu.current_gate = 2
+    mmu.loaded_gate = 1
     mmu.filament_pos = FilamentPos.AT_EXTRUDER
     mmu.action = ACTION_LOADING
     operation = Operation(OperationKind.TOOL_CHANGE, from_tool=1, to_tool=2)

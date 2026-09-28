@@ -162,20 +162,22 @@ class MmuStatus:
             int: The gate index or -1.
         """
         mmu = self.mmu
-        if mmu.current_tool is not None:
-            return mmu.current_tool
-        return _or_unknown(mmu.current_filament)
+        if mmu.current_gate is not None:
+            return mmu.current_gate
+        return _or_unknown(mmu.loaded_gate)
 
     def tool(self) -> int:
         """Return the loaded tool, falling back to the selected one.
+
+        Tool n is gate n on the MMU3, so this is the loaded gate.
 
         Returns:
             int: The tool index or -1.
         """
         mmu = self.mmu
-        if mmu.current_filament is not None:
-            return mmu.current_filament
-        return _or_unknown(mmu.current_tool)
+        if mmu.loaded_gate is not None:
+            return mmu.loaded_gate
+        return _or_unknown(mmu.current_gate)
 
     def print_state(self, eventtime: float) -> str:
         """Return the Happy Hare ``print_state``.
@@ -246,7 +248,7 @@ class MmuStatus:
             dict: The filament name, material, color, spool id and temperature.
         """
         gate_map = self.mmu.gate_map
-        gate = self.mmu.current_filament
+        gate = self.mmu.loaded_gate
         if not gate_map.is_valid_gate(gate):
             return {
                 "filament_name": "",

@@ -34,7 +34,7 @@ from extras.mmu import (  # noqa: E402
 def make_mmu() -> MMU:
     """Build a bare MMU3 instance, enough for track_operation to run."""
     mmu = object.__new__(MMU)
-    mmu.current_filament = None
+    mmu.loaded_gate = None
     mmu.current_operation = None
     mmu.pending_operation = None
     mmu.total_stats = OperationStats()
@@ -144,11 +144,11 @@ def test_from_dict_empty_is_safe() -> None:
 # ---------------------------------------------------------------------------
 def test_track_operation_records_success_in_both_scopes() -> None:
     mmu = make_mmu()
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
 
     @track_operation(OperationKind.TOOL_CHANGE)
     def cmd_tx(self, gcmd, tool_id=0):
-        self.current_filament = tool_id
+        self.loaded_gate = tool_id
         return True
 
     assert cmd_tx(mmu, None, tool_id=2) is True
@@ -162,7 +162,7 @@ def test_track_operation_records_success_in_both_scopes() -> None:
 
 def test_track_operation_records_failure_on_false_return() -> None:
     mmu = make_mmu()
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
 
     @track_operation(OperationKind.TOOL_CHANGE)
     def cmd_tx(self, gcmd, tool_id=0):
@@ -178,7 +178,7 @@ def test_track_operation_records_failure_on_false_return() -> None:
 
 def test_track_operation_records_failure_when_command_raises() -> None:
     mmu = make_mmu()
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
 
     @track_operation(OperationKind.TOOL_CHANGE)
     def cmd_tx(self, gcmd, tool_id=0):

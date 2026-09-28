@@ -83,8 +83,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu._print_stats_state = "standby"
     mmu.print_state = "ready"
     mmu.print_start_detection = True
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.finda_triggered = False
     mmu.current_operation = None
@@ -157,7 +157,7 @@ def test_filament_state(pos, expected) -> None:
 # gate / tool
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    ("current_tool", "current_filament", "gate", "tool"),
+    ("current_gate", "loaded_gate", "gate", "tool"),
     [
         (None, None, -1, -1),
         (2, None, 2, 2),
@@ -165,10 +165,10 @@ def test_filament_state(pos, expected) -> None:
         (1, 3, 1, 3),
     ],
 )
-def test_gate_and_tool_fallbacks(current_tool, current_filament, gate, tool) -> None:
+def test_gate_and_tool_fallbacks(current_gate, loaded_gate, gate, tool) -> None:
     mmu = make_mmu()
-    mmu.current_tool = current_tool
-    mmu.current_filament = current_filament
+    mmu.current_gate = current_gate
+    mmu.loaded_gate = loaded_gate
     status = MmuStatus(mmu).get_status(0.0)
     assert status["gate"] == gate
     assert status["tool"] == tool
@@ -308,7 +308,7 @@ def test_active_filament_of_loaded_gate() -> None:
     mmu.gate_map.update(
         2, name="Silk Gold", material="PLA", color="ffd700", temperature=215, spool_id=4
     )
-    mmu.current_filament = 2
+    mmu.loaded_gate = 2
     assert MmuStatus(mmu).get_status(0.0)["active_filament"] == {
         "filament_name": "Silk Gold",
         "material": "PLA",
@@ -519,11 +519,14 @@ def test_printer_mmu_has_the_happy_hare_fields() -> None:
 
 def test_printer_mmu_has_the_extra_fields() -> None:
     mmu = make_printer_mmu()
-    mmu.current_tool = 2
-    mmu.current_filament = 2
+    mmu.current_gate = 2
+    mmu.loaded_gate = 2
     mmu.filament_pos = FilamentPos.LOADED
     status = mmu.get_status(0.0)
     assert status["is_enabled"] is True
+    assert status["current_gate"] == 2
+    assert status["loaded_gate"] == 2
+    # the pre tool / gate split names, kept for user macros
     assert status["current_tool"] == 2
     assert status["current_filament"] == 2
     assert status["filament_pos"] == FILAMENT_POS_LOADED

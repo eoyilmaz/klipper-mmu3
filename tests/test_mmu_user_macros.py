@@ -71,8 +71,8 @@ def make_mmu(macros=(), failing=()) -> MMU:
     mmu.printer.macros = set(macros) | set(failing)
     mmu.is_paused = False
     mmu.filament_pos = FilamentPos.UNLOADED
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.current_operation = None
     mmu.enable_no_selector_mode = False
     mmu.enable_filament_cutter = False
@@ -92,12 +92,12 @@ def make_mmu(macros=(), failing=()) -> MMU:
     mmu.gcode = types.SimpleNamespace(run_script_from_command=run_script_from_command)
     mmu.toolhead = types.SimpleNamespace(wait_moves=lambda: None)
 
-    def select_tool(tool_id: int) -> bool:
-        mmu.calls.append(("select", tool_id))
-        mmu.current_tool = tool_id
+    def select_gate(gate: int) -> bool:
+        mmu.calls.append(("select", gate))
+        mmu.current_gate = gate
         return True
 
-    mmu.select_tool = select_tool
+    mmu.select_gate = select_gate
 
     # each fake sub-step records itself and advances/retreats filament_pos
     def step(name: str, reached: FilamentPos):
@@ -125,8 +125,8 @@ def make_loaded_mmu(macros=(), failing=()) -> MMU:
     """Build a bare MMU3 with T1 loaded."""
     mmu = make_mmu(macros, failing)
     mmu.filament_pos = FilamentPos.LOADED
-    mmu.current_tool = 1
-    mmu.current_filament = 1
+    mmu.current_gate = 1
+    mmu.loaded_gate = 1
     return mmu
 
 
@@ -140,7 +140,7 @@ def macro_calls(mmu: MMU) -> list:
 # ---------------------------------------------------------------------------
 def test_load_calls_pre_and_post_load_around_the_moves() -> None:
     mmu = make_mmu(macros=HOOKS)
-    assert mmu.load_tool(2) is True
+    assert mmu.load_gate(2) is True
     assert mmu.calls == [
         ("macro", PRE_LOAD_MACRO),
         ("select", 2),
@@ -153,21 +153,21 @@ def test_load_calls_pre_and_post_load_around_the_moves() -> None:
 
 def test_load_without_macros_only_moves() -> None:
     mmu = make_mmu()
-    assert mmu.load_tool(2) is True
+    assert mmu.load_gate(2) is True
     assert macro_calls(mmu) == []
     assert mmu.filament_pos == FilamentPos.LOADED
 
 
 def test_load_when_already_loaded_calls_no_macros() -> None:
     mmu = make_loaded_mmu(macros=HOOKS)
-    assert mmu.load_tool(1) is True
+    assert mmu.load_gate(1) is True
     assert macro_calls(mmu) == []
 
 
 def test_failing_pre_load_fails_the_load_before_any_move() -> None:
     mmu = make_mmu(failing=[PRE_LOAD_MACRO])
     mmu.current_operation = Operation(OperationKind.LOAD, to_tool=2)
-    assert mmu.load_tool(2) is False
+    assert mmu.load_gate(2) is False
     assert mmu.filament_pos == FilamentPos.UNLOADED
     assert ("select", 2) not in mmu.calls
     assert mmu.current_operation.error == f"{PRE_LOAD_MACRO} failed: Boom"
@@ -175,7 +175,7 @@ def test_failing_pre_load_fails_the_load_before_any_move() -> None:
 
 def test_failing_post_load_fails_the_load() -> None:
     mmu = make_mmu(failing=[POST_LOAD_MACRO])
-    assert mmu.load_tool(2) is False
+    assert mmu.load_gate(2) is False
     assert mmu.filament_pos == FilamentPos.LOADED
     assert ("msg", f"{POST_LOAD_MACRO} failed: Boom") in mmu.calls
 
@@ -183,7 +183,7 @@ def test_failing_post_load_fails_the_load() -> None:
 def test_failed_load_move_skips_post_load() -> None:
     mmu = make_mmu(macros=HOOKS)
     mmu.load_filament_from_finda_to_extruder = lambda: False
-    assert mmu.load_tool(2) is False
+    assert mmu.load_gate(2) is False
     assert macro_calls(mmu) == [PRE_LOAD_MACRO]
 
 
@@ -192,7 +192,7 @@ def test_failed_load_move_skips_post_load() -> None:
 # ---------------------------------------------------------------------------
 def test_unload_calls_pre_and_post_unload_around_the_moves() -> None:
     mmu = make_loaded_mmu(macros=HOOKS)
-    assert mmu.unload_tool() is True
+    assert mmu.unload_gate() is True
     assert mmu.calls == [
         ("macro", PRE_UNLOAD_MACRO),
         ("from_hotend", FilamentPos.AT_EXTRUDER),
@@ -206,7 +206,7 @@ def test_pre_unload_runs_before_the_filament_cut() -> None:
     mmu = make_loaded_mmu(macros=HOOKS)
     mmu.enable_filament_cutter = True
     mmu.is_filament_in_switch_sensor = lambda: True
-    assert mmu.unload_tool() is True
+    assert mmu.unload_gate() is True
     assert macro_calls(mmu) == [
         PRE_UNLOAD_MACRO,
         "_MMU_CUT_TIP",
@@ -216,27 +216,27 @@ def test_pre_unload_runs_before_the_filament_cut() -> None:
 
 def test_unload_without_macros_only_moves() -> None:
     mmu = make_loaded_mmu()
-    assert mmu.unload_tool() is True
+    assert mmu.unload_gate() is True
     assert macro_calls(mmu) == []
     assert mmu.filament_pos == FilamentPos.UNLOADED
 
 
 def test_unload_when_already_unloaded_calls_no_macros() -> None:
     mmu = make_mmu(macros=HOOKS)
-    mmu.current_filament = 1
-    assert mmu.unload_tool() is True
+    mmu.loaded_gate = 1
+    assert mmu.unload_gate() is True
     assert macro_calls(mmu) == []
 
 
 def test_failing_pre_unload_fails_the_unload_before_any_move() -> None:
     mmu = make_loaded_mmu(failing=[PRE_UNLOAD_MACRO])
-    assert mmu.unload_tool() is False
+    assert mmu.unload_gate() is False
     assert mmu.filament_pos == FilamentPos.LOADED
 
 
 def test_failing_post_unload_fails_the_unload() -> None:
     mmu = make_loaded_mmu(failing=[POST_UNLOAD_MACRO])
-    assert mmu.unload_tool() is False
+    assert mmu.unload_gate() is False
     assert mmu.filament_pos == FilamentPos.UNLOADED
 
 
@@ -245,7 +245,7 @@ def test_failing_post_unload_fails_the_unload() -> None:
 # ---------------------------------------------------------------------------
 def test_action_changed_is_called_on_every_change() -> None:
     mmu = make_mmu(macros=[ACTION_CHANGED_MACRO])
-    assert mmu.load_tool(2) is True
+    assert mmu.load_gate(2) is True
     assert macro_calls(mmu) == [
         f"{ACTION_CHANGED_MACRO} ACTION='{ACTION_LOADING}' OLD_ACTION='{ACTION_IDLE}'",
         f"{ACTION_CHANGED_MACRO} ACTION='{ACTION_IDLE}' OLD_ACTION='{ACTION_LOADING}'",
@@ -275,7 +275,7 @@ def test_action_changed_is_not_called_when_not_defined() -> None:
 
 def test_failing_action_changed_is_reported_but_does_not_fail() -> None:
     mmu = make_mmu(failing=[ACTION_CHANGED_MACRO])
-    assert mmu.load_tool(2) is True
+    assert mmu.load_gate(2) is True
     assert mmu.action == ACTION_IDLE
     assert ("info", f"{ACTION_CHANGED_MACRO} failed: Boom") in mmu.calls
 
@@ -284,7 +284,7 @@ def test_failing_action_changed_is_reported_but_does_not_fail() -> None:
 def test_hook_is_not_called_when_only_other_hooks_are_defined(macro) -> None:
     others = [m for m in HOOKS if m != macro]
     mmu = make_loaded_mmu(macros=others)
-    assert mmu.unload_tool() is True
-    assert mmu.load_tool(2) is True
+    assert mmu.unload_gate() is True
+    assert mmu.load_gate(2) is True
     # HOOKS is in the order of an unload followed by a load
     assert macro_calls(mmu) == others
