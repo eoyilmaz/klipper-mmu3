@@ -234,11 +234,18 @@ The extension supplies all the necessary gcode commands.
    recovery succeeds. `RESUME_MMU FORCE=1` clears the pending operation and
    resumes anyway - use it when you have already fixed the filament by hand.
 
-8. `CUT_FILAMENT_IN_EXTRUDER`
+8. `_MMU_CUT_TIP` / `_MMU_FORM_TIP`
 
-   This macro is defined in the `mmu.cfg` and controls the movement required
-   to cut the filament inside the extruder. This is called by the `Tx` commands
-   if the `enable_filament_cutter` is set to `True`.
+   These macros are defined in the `mmu.cfg`. `_MMU_CUT_TIP` controls the
+   movement required to cut the filament inside the extruder, it is called by
+   the `Tx` commands (and `MMU_CUT`) if the `enable_filament_cutter` is set to
+   `True`. `_MMU_FORM_TIP` rams the filament to form its tip, it is called by
+   `MMU_FORM_TIP` and, without a cutter, when the filament is ejected before
+   homing (tool changes leave ramming to the slicer).
+
+   They were called `CUT_FILAMENT_IN_EXTRUDER` and `RAMMING_SLICER` before,
+   rename them if your `mmu.cfg` still has the old names (Klipper stops with
+   this message until you do).
 
 9. `PULLEY_CALIBRATE`
 
@@ -362,6 +369,17 @@ The extension supplies all the necessary gcode commands.
    set `print_start_detection: False` in `[mmu]`, the job then only starts and
    ends with these commands. Pausing and resuming are always detected.
 
+18. `MMU_FORM_TIP` / `MMU_CUT`
+
+   Run the tip forming (`_MMU_FORM_TIP`) or the in-extruder cut
+   (`_MMU_CUT_TIP`) on its own, to test and tune the
+   macros without a tool change. The filament must be loaded and the extruder
+   hot enough (`min_temp_extruder`), `MMU_CUT` also needs
+   `enable_filament_cutter: True`. The filament is left in the extruder
+   afterwards, `MMU_UNLOAD` takes it out. Unlike Happy Hare's
+   `MMU_TEST_FORM_TIP` they take no parameters: the MMU3 macros are plain
+   G-code without variables to override, edit them in `mmu.cfg` instead.
+
 > [!NOTE]
 >
 > The following commands were renamed to match Happy Hare's naming, which the
@@ -398,7 +416,9 @@ design.
    MMU_CHANGE_TOOL
    MMU_CHECK_GATE
    MMU_CHECK_GATES
+   MMU_CUT
    MMU_EJECT
+   MMU_FORM_TIP
    MMU_GATE_MAP
    MMU_HELP
    MMU_HOME

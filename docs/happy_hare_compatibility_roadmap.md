@@ -121,10 +121,15 @@ Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macro
   `_MMU_PRE_LOAD`, `_MMU_POST_LOAD` and `_MMU_ACTION_CHANGED` (with `ACTION` / `OLD_ACTION`). Only
   call a macro if it exists, so existing setups are unaffected. A failing load / unload macro fails
   the operation. Still open: `_MMU_POST_FORM_TIP` and a configurable macro name per hook.
-- [ ] **`MMU_FORM_TIP` and `MMU_CUT`.** ([#60](https://github.com/eoyilmaz/klipper-mmu3/issues/60))
+- [x] **`MMU_FORM_TIP` and `MMU_CUT`.** ([#60](https://github.com/eoyilmaz/klipper-mmu3/issues/60))
   Standalone commands for tip forming (ramming) and the in-extruder cut, so they can be tested and
-  tuned outside a tool change. The code paths already exist (`ramming_slicer`,
-  `CUT_FILAMENT_IN_EXTRUDER`).
+  tuned outside a tool change. They run the same step as an eject / unload, need loaded filament and
+  a hot extruder, and leave `filament_pos` at `IN_HOTEND` (or lower if the sensors say so). Happy
+  Hare's `MMU_TEST_FORM_TIP` parameters (`SHOW`, `RESET`, `RUN`, variable overrides) don't apply:
+  the MMU3 macros have no variables. Breaking change: the `RAMMING_SLICER` and
+  `CUT_FILAMENT_IN_EXTRUDER` macros are renamed to Happy Hare's `_MMU_FORM_TIP` and `_MMU_CUT_TIP`,
+  Klipper stops with the rename steps if a needed one is missing (`_MMU_CUT_TIP` only with the
+  cutter enabled).
 - [ ] **Sample slicer G-code in Happy Hare style.**
   ([#61](https://github.com/eoyilmaz/klipper-mmu3/issues/61)) Update `sample_configs/` so start /
   end G-code uses `MMU_PRINT_START`, `MMU_PRINT_END` and `MMU_CHANGE_TOOL`.
