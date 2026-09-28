@@ -224,7 +224,8 @@ The extension supplies all the necessary gcode commands.
 1. `Tx`
 
    The tool change command, i.e. `T0`, `T1`, `T2`, `T3`, `T4`, `T5`, `T6`,
-   `T7`, `T8`, `T9`, `T10`, `T11`.
+   `T7`, `T8`, `T9`, `T10`, `T11`. `Tn` loads the gate tool `n` is mapped to
+   (gate `n` unless you remap it, see `MMU_TTG_MAP`).
 
 2. `MMU_HOME`
 
@@ -237,16 +238,16 @@ The extension supplies all the necessary gcode commands.
 
 4. `MMU_SELECT` / `MMU_UNSELECT`
 
-   Selects the requested gate (`GATE=`, `TOOL=` or `VALUE=`), or parks the
+   Selects the requested gate (`GATE=` or `TOOL=`), or parks the
    idler:
 
    ```gcode
    MMU_SELECT GATE=0
    ```
 
-   Tools are gates on the MMU3, so `TOOL=0` is the same as `GATE=0`. Giving
-   both with different values is an error. This applies to all commands that
-   take a gate.
+   `TOOL=0` is the gate tool 0 is mapped to (see `MMU_TTG_MAP`), `GATE=`
+   names the gate directly and wins if both are given. This applies to all
+   commands that take a gate.
 
 5. `MMU_UNLOCK`
 
@@ -381,7 +382,7 @@ The extension supplies all the necessary gcode commands.
 15. `MMU_STATUS`
 
    Prints a summary of the MMU state: enabled / homed / paused, the selected
-   and loaded gates, the filament position, the current action, the pending
+   and loaded gates, the loaded tool, the filament position, the current action, the pending
    (failed) operation and the gate map.
 
 16. `MMU_HELP`
@@ -403,7 +404,31 @@ The extension supplies all the necessary gcode commands.
    set `print_start_detection: False` in `[mmu]`, the job then only starts and
    ends with these commands. Pausing and resuming are always detected.
 
-18. `MMU_FORM_TIP` / `MMU_CUT`
+18. `MMU_TTG_MAP` / `MMU_REMAP_TTG`
+
+   Shows or edits the tool-to-gate (TTG) map, same as in Happy Hare: which
+   gate each tool (`Tn`, `MMU_CHANGE_TOOL TOOL=n`) loads. By default tool `n`
+   loads gate `n`. This is normally done from the tool mapping dialog of the
+   Mainsail / Fluidd MMU panel, but works from the console too:
+
+   ```gcode
+   MMU_TTG_MAP                   ; print the map
+   MMU_TTG_MAP TOOL=2 GATE=4     ; T2 loads gate 4
+   MMU_TTG_MAP MAP=0,0,0,0,0     ; set the whole map, the gate of each tool
+   MMU_TTG_MAP GATE=4 AVAILABLE=1 ; also mark gate 4 available (0: empty)
+   MMU_TTG_MAP RESET=1           ; tool n loads gate n again
+   ```
+
+   `QUIET=1` doesn't print the map after a change. `MMU_REMAP_TTG` is the same
+   command (Happy Hare's older name). Several tools can map to the same gate,
+   e.g. to print a multi-color file with one filament. The map is saved with
+   `save_variables` and survives restarts.
+
+   `MMU_CHANGE_TOOL GATE=n` bypasses the map and loads gate `n` as the tool
+   mapped to it. `MMU_RECOVER TOOL=2 GATE=4` tells the MMU that T2 is loaded
+   from gate 4 and remaps T2 to gate 4.
+
+19. `MMU_FORM_TIP` / `MMU_CUT`
 
    Run the tip forming (`_MMU_FORM_TIP`) or the in-extruder cut
    (`_MMU_CUT_TIP`) on its own, to test and tune the
@@ -466,6 +491,8 @@ design.
    MMU_STATS
    MMU_STATS_RESET_JOB
    MMU_STATUS
+   MMU_TTG_MAP
+   MMU_REMAP_TTG
    MMU_UNLOAD
    MMU_UNLOCK
    MMU_UNSELECT
@@ -526,14 +553,17 @@ gcode:
 
 As in Happy Hare, a **tool** is what the slicer asks for (`T0`, `T1`, ...,
 `MMU_CHANGE_TOOL TOOL=`) and a **gate** is a physical lane of the MMU, where a
-spool is fed in. The MMU3 always loads gate `n` for tool `n`.
+spool is fed in. By default the MMU3 loads gate `n` for tool `n`, the
+tool-to-gate map (`MMU_TTG_MAP`, or the panel's tool mapping dialog) changes
+that.
 
 Your own macros can read the selected and the loaded gate from
 `printer.mmu.current_gate` and `printer.mmu.loaded_gate` (`None` if there is
 none). The old names `printer.mmu.current_tool` and
 `printer.mmu.current_filament` still work and have the same values, but use
-the new ones in new macros. Happy Hare's `printer.mmu.gate` and
-`printer.mmu.tool` are reported too.
+the new ones in new macros. Happy Hare's `printer.mmu.gate`,
+`printer.mmu.tool` (the tool mapped to the loaded gate) and
+`printer.mmu.ttg_map` are reported too.
 
 `GET_MMU_PARAM` / `SET_MMU_PARAM` use the new names as well:
 `PARAM=current_gate` / `PARAM=loaded_gate` instead of `PARAM=current_tool` /
@@ -569,7 +599,8 @@ The panel shows:
 It also has buttons to select, load, unload, eject, preload a gate, check one
 or all gates for filament, home, unlock and recover the MMU. Clicking a gate's filament opens the gate
 editor, where you can set the filament name, material, color and temperature,
-or pick a Spoolman spool.
+or pick a Spoolman spool. The tool mapping dialog maps each tool to a gate
+(see `MMU_TTG_MAP`), its endless spool groups aren't supported.
 
 `MMU_CHECK_GATE` checks the selected gate and `MMU_CHECK_GATES` checks all
 gates. Each gate's filament is fed to FINDA and back, and the gate is marked
@@ -587,7 +618,7 @@ spoolman_support: readonly  # off, readonly
 
 Add a `[save_variables]` section to your `printer.cfg` (see
 [Post Installation](#post-installation-both-automatic-and-manual-installation)),
-so the gate map survives restarts.
+so the gate map and the tool-to-gate map survive restarts.
 
 ### Spoolman
 
@@ -613,10 +644,9 @@ it from the previous one. The gate to spool mapping is stored in Klipper
 
 ### Not supported
 
-The MMU3 always loads gate `n` for tool `n`. The following Happy Hare features
-aren't available, and their buttons only print a "not supported" message:
-tool-to-gate remapping, endless spool, bypass, gear motor sync, and loading
-or unloading the extruder only.
+The following Happy Hare features aren't available, and their buttons only
+print a "not supported" message: endless spool, bypass, gear motor sync, and
+loading or unloading the extruder only.
 The panel's "T macro color" setting isn't supported either, the MMU3's `Tn`
 commands aren't macros.
 

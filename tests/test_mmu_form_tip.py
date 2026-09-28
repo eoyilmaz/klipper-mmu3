@@ -45,6 +45,8 @@ def make_mmu(cutter: bool = False, hot: bool = True) -> MMU:
         hot: Whether the extruder is hot enough.
     """
     mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.selected_tool = None
     mmu.printer = types.SimpleNamespace(
         command_error=CommandError, lookup_object=lambda name, default=None: default
     )

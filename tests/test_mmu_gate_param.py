@@ -1,4 +1,4 @@
-"""Tests for reading the gate from ``GATE=``, ``TOOL=`` and ``VALUE=``."""
+"""Tests for reading the tool and gate from ``TOOL=`` and ``GATE=``."""
 
 # Standard Library Imports
 import sys
@@ -15,7 +15,12 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu import MMU, FilamentPos, get_gate_param  # noqa: E402
+from extras.mmu import (  # noqa: E402
+    MMU,
+    FilamentPos,
+    get_gate_param,
+    get_tool_and_gate_params,
+)
 from extras.mmu_gate_map import GateMap  # noqa: E402
 
 
@@ -60,6 +65,9 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.printer = FakePrinter()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.selected_tool = None
+    mmu.save_variables = None
     mmu.is_enabled = True
     mmu.is_paused = False
     mmu.current_gate = None
@@ -80,7 +88,7 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.select_gate = record("select")
     mmu.load_gate = record("load")
     mmu.pre_load_filament_to_finda = record("preload")
-    mmu.cmd_tx = lambda gcmd, tool_id: record("tx")(tool_id)
+    mmu.cmd_tx = lambda gcmd, tool_id, gate=None: record("tx")((tool_id, gate))
     mmu.assess_filament_pos = lambda: None
     mmu.sync_active_spool = lambda: None
     mmu.save_total_stats = lambda: None
@@ -102,27 +110,46 @@ def make_mmu(num_tools: int = 5) -> MMU:
         ({}, None),
         ({"GATE": 2}, 2),
         ({"TOOL": 3}, 3),
-        ({"VALUE": 4}, 4),
         ({"GATE": 1, "TOOL": 1}, 1),
-        ({"GATE": 1, "VALUE": 4}, 1),
-        ({"TOOL": 3, "VALUE": 4}, 3),
-        ({"GATE": 2, "TOOL": 2, "VALUE": 4}, 2),
+        # the old MMU3 VALUE= is not read anymore
+        ({"VALUE": 4}, None),
+        # GATE= wins over TOOL=, they can differ when the tool is remapped
+        ({"GATE": 1, "TOOL": 2}, 1),
     ],
 )
 def test_get_gate_param_precedence(params, expected) -> None:
     assert get_gate_param(FakeGCmd(**params)) == expected
 
 
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        ({"TOOL": 0}, (0, 3)),
+        ({"TOOL": 3}, (3, 1)),
+        # GATE= bypasses the map
+        ({"GATE": 0}, (None, 0)),
+        ({"TOOL": 0, "GATE": 2}, (0, 2)),
+        # not in the map, left for the caller to reject
+        ({"TOOL": -1}, (-1, -1)),
+        ({"TOOL": 7}, (7, 7)),
+    ],
+)
+def test_get_tool_and_gate_params_resolves_tools_through_the_map(
+    params, expected
+) -> None:
+    ttg_map = [3, 1, 2, 1, 4]
+    assert get_tool_and_gate_params(FakeGCmd(**params), ttg_map) == expected
+
+
+def test_get_gate_param_resolves_tool_through_the_map() -> None:
+    assert get_gate_param(FakeGCmd(TOOL=0), ttg_map=[4, 1, 2, 3, 0]) == 4
+
+
 def test_get_gate_param_without_gcmd_is_none() -> None:
     assert get_gate_param(None) is None
 
 
-def test_get_gate_param_rejects_conflicting_gate_and_tool() -> None:
-    with pytest.raises(CommandError, match="GATE=1 and TOOL=2 differ"):
-        get_gate_param(FakeGCmd(GATE=1, TOOL=2))
-
-
-@pytest.mark.parametrize("name", ["GATE", "TOOL", "VALUE"])
+@pytest.mark.parametrize("name", ["GATE", "TOOL"])
 def test_get_gate_param_minval(name) -> None:
     assert get_gate_param(FakeGCmd(**{name: -1}), minval=-1) == -1
     with pytest.raises(CommandError):
@@ -159,7 +186,7 @@ def test_mmu_preload_accepts_gate_and_tool(name) -> None:
 def test_mmu_change_tool_accepts_gate_and_tool(name) -> None:
     mmu = make_mmu()
     assert mmu.cmd_mmu_change_tool(FakeGCmd(**{name: 1})) is True
-    assert mmu.calls == [("tx", 1)]
+    assert mmu.calls == [("tx", (1, 1))]
 
 
 @pytest.mark.parametrize("name", ["GATE", "TOOL"])
@@ -171,18 +198,98 @@ def test_mmu_recover_accepts_gate_and_tool(name) -> None:
     assert mmu.loaded_gate is None
 
 
+# ---------------------------------------------------------------------------
+# tool-to-gate map
+# ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    "command",
+    ("command", "call"),
     [
-        "cmd_mmu_select",
-        "cmd_mmu_load",
-        "cmd_mmu_preload",
-        "cmd_mmu_change_tool",
-        "cmd_mmu_recover",
+        ("cmd_mmu_select", "select"),
+        ("cmd_mmu_load", "load"),
+        ("cmd_mmu_preload", "preload"),
     ],
 )
-def test_commands_reject_conflicting_gate_and_tool(command) -> None:
+def test_commands_resolve_tool_through_the_map(command, call) -> None:
     mmu = make_mmu()
-    with pytest.raises(CommandError, match="differ"):
-        getattr(mmu, command)(FakeGCmd(GATE=1, TOOL=2))
+    mmu.ttg_map = [0, 3, 2, 1, 4]
+    assert getattr(mmu, command)(FakeGCmd(TOOL=1)) is True
+    assert mmu.calls == [(call, 3)]
+
+
+@pytest.mark.parametrize(
+    ("command", "call"),
+    [
+        ("cmd_mmu_select", "select"),
+        ("cmd_mmu_load", "load"),
+        ("cmd_mmu_preload", "preload"),
+    ],
+)
+def test_commands_gate_bypasses_the_map(command, call) -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 3, 2, 1, 4]
+    assert getattr(mmu, command)(FakeGCmd(GATE=1, TOOL=2)) is True
+    assert mmu.calls == [(call, 1)]
+
+
+def test_mmu_select_with_tool_selects_the_tool() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 3, 2, 3, 4]
+    assert mmu.cmd_mmu_select(FakeGCmd(TOOL=3)) is True
+    mmu.loaded_gate = 3
+    # T1 maps to gate 3 too, the selected T3 names it
+    assert mmu.loaded_tool == 3
+
+
+def test_mmu_change_tool_resolves_tool_through_the_map() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 3, 2, 1, 4]
+    assert mmu.cmd_mmu_change_tool(FakeGCmd(TOOL=1)) is True
+    assert mmu.calls == [("tx", (1, 3))]
+
+
+def test_mmu_change_tool_gate_loads_as_the_mapped_tool() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 3, 2, 1, 4]
+    assert mmu.cmd_mmu_change_tool(FakeGCmd(GATE=3)) is True
+    assert mmu.calls == [("tx", (1, 3))]
+
+
+def test_mmu_change_tool_refuses_a_gate_no_tool_maps_to() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 0, 0, 0, 0]
+    assert mmu.cmd_mmu_change_tool(FakeGCmd(GATE=3)) is False
     assert mmu.calls == []
+    assert "No tool maps to gate 3" in mmu.messages[-1]
+
+
+def test_mmu_recover_tool_alone_is_its_mapped_gate() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 3, 2, 1, 4]
+    assert mmu.cmd_mmu_recover(FakeGCmd(TOOL=1, LOADED=1)) is True
+    assert mmu.loaded_gate == 3
+    assert mmu.loaded_tool == 1
+    assert mmu.filament_pos == FilamentPos.LOADED
+    assert mmu.ttg_map == [0, 3, 2, 1, 4]
+
+
+def test_mmu_recover_tool_and_gate_remaps_the_tool() -> None:
+    mmu = make_mmu()
+    assert mmu.cmd_mmu_recover(FakeGCmd(TOOL=2, GATE=4, LOADED=1)) is True
+    assert mmu.ttg_map == [0, 1, 4, 3, 4]
+    assert mmu.loaded_gate == 4
+    assert mmu.loaded_tool == 2
+
+
+def test_mmu_recover_unknown_tool_keeps_the_map() -> None:
+    # Mainsail's recover dialog sends TOOL=-1 when the tool is unknown
+    mmu = make_mmu()
+    assert mmu.cmd_mmu_recover(FakeGCmd(TOOL=-1, GATE=2)) is True
+    assert mmu.ttg_map == [0, 1, 2, 3, 4]
+    assert mmu.loaded_gate == 2
+    assert mmu.loaded_tool == 2
+
+
+def test_mmu_recover_rejects_invalid_tool() -> None:
+    mmu = make_mmu()
+    with pytest.raises(CommandError, match="Invalid tool: 7"):
+        mmu.cmd_mmu_recover(FakeGCmd(TOOL=7, GATE=1))

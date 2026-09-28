@@ -76,6 +76,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.gcode = FakeGCode()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.is_enabled = True
     mmu.is_homed = False
     mmu.is_paused = False
@@ -166,7 +168,7 @@ def test_register_commands_gives_the_commands_a_description() -> None:
     for name in ("MMU", "MMU_HELP", "MMU_STATUS", "MMU_HOME", "M702"):
         assert mmu.gcode.help[name]
     # unsupported commands stay out of Klipper's HELP
-    for name in ("MMU_TTG_MAP", "MMU_TEST_CONFIG"):
+    for name in ("MMU_ENDLESS_SPOOL", "MMU_TEST_CONFIG"):
         assert name in mmu.gcode.handlers
         assert name not in mmu.gcode.help
 
@@ -207,6 +209,7 @@ def test_mmu_status_idle() -> None:
         "Paused: no",
         "Selected gate: none",
         "Loaded gate: none",
+        "Loaded tool: none",
         "Filament position: UNLOADED",
         f"Action: {ACTION_IDLE}",
         "Pending operation: none",
@@ -230,8 +233,9 @@ def test_mmu_status_loaded_and_paused() -> None:
     lines = mmu.messages[0].splitlines()
     assert "Homed: yes" in lines
     assert "Paused: yes" in lines
-    assert "Selected gate: T2" in lines
-    assert "Loaded gate: T1" in lines
+    assert "Selected gate: 2" in lines
+    assert "Loaded gate: 1" in lines
+    assert "Loaded tool: T1" in lines
     assert "Filament position: AT_EXTRUDER" in lines
     assert f"Action: {ACTION_LOADING}" in lines
     assert f"Pending operation: {operation.describe()}" in lines

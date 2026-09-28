@@ -34,6 +34,8 @@ def make_mmu(num_tools: int = 5, finda: bool = False) -> MMU:
     mmu = object.__new__(MMU)
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.gate_map.update(2, status=GATE_AVAILABLE)
     mmu.save_variables = None
     mmu.is_enabled = True

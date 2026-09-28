@@ -153,10 +153,15 @@ The largest change. Needed before any feature where tool `n` is not gate `n`.
   `current_gate` / `loaded_gate`. The gate side LCD menu
   IDs are renamed (`__select_gate __gate0`, `__unselect_gate`, `__unload`, `__eject`, ...) and the
   "Unload Tool" button / menu entry is "Unload" (all documented in the README).
-- [ ] **TTG map.** ([#63](https://github.com/eoyilmaz/klipper-mmu3/issues/63)) Persist a `ttg_map`
-  with `save_variables`, report it in `get_status()`, and resolve `Tn` / `MMU_CHANGE_TOOL TOOL=n`
-  through it. Implement `MMU_TTG_MAP` (show / set / reset) and `MMU_REMAP_TTG`. Mainsail's tool
-  mapping dialog then works.
+- [x] **TTG map.** ([#63](https://github.com/eoyilmaz/klipper-mmu3/issues/63)) The `ttg_map` is
+  saved with `save_variables` (`mmu_ttg_map`) and reported in `get_status()`. `Tn`, `Kn` and
+  `TOOL=` resolve through it, `GATE=` bypasses it (`GATE=` and `TOOL=` may now differ, `GATE=`
+  wins). `MMU_TTG_MAP` shows the map, `TOOL= GATE=` sets one entry, `MAP=` the whole map,
+  `RESET=1` the identity, `GATE= AVAILABLE=` the gate status; `MMU_REMAP_TTG` is the same command.
+  `MMU_CHANGE_TOOL GATE=` loads the gate as the tool mapped to it, `MMU_RECOVER TOOL= GATE=` remaps
+  the tool like Happy Hare. The panel's `tool`, `last_tool` / `next_tool` and the stats' tool
+  change tally are tools; `Operation` carries both the tools and the gates. The removed
+  `tool_mapping` option (#62) is not revived, the identity is the default map.
 - [ ] **Endless spool.** ([#64](https://github.com/eoyilmaz/klipper-mmu3/issues/64)) On runout,
   switch the tool to the next available gate in the same `endless_spool_groups` group and continue
   printing. Needs reliable runout detection (filament switch sensor, or the motion sensor from Phase

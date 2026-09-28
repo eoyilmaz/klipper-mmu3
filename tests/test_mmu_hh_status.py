@@ -76,6 +76,8 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu = object.__new__(MMU)
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.is_enabled = True
     mmu.is_homed = True
     mmu.is_paused = False
@@ -290,8 +292,51 @@ def test_arrays_are_num_gates_long(num_tools) -> None:
         assert len(status[key]) == num_tools, key
 
 
-def test_ttg_map_is_identity() -> None:
+def test_ttg_map_is_identity_by_default() -> None:
     assert MmuStatus(make_mmu()).get_status(0.0)["ttg_map"] == [0, 1, 2, 3, 4]
+
+
+def test_ttg_map_is_reported_as_a_new_list() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [4, 3, 2, 1, 0]
+    reported = MmuStatus(mmu).get_status(0.0)["ttg_map"]
+    assert reported == [4, 3, 2, 1, 0]
+    # Klipper only pushes a status change if the object is a new one
+    assert reported is not mmu.ttg_map
+
+
+@pytest.mark.parametrize(
+    ("current_gate", "loaded_gate", "gate", "tool"),
+    [
+        (None, None, -1, -1),
+        (1, None, 1, 3),
+        (None, 3, 3, 1),
+        (1, 3, 1, 1),
+        # no tool maps to gate 4
+        (None, 4, 4, -1),
+    ],
+)
+def test_tool_is_the_tool_mapped_to_the_gate(
+    current_gate, loaded_gate, gate, tool
+) -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 3, 2, 1, 0]
+    mmu.current_gate = current_gate
+    mmu.loaded_gate = loaded_gate
+    status = MmuStatus(mmu).get_status(0.0)
+    assert status["gate"] == gate
+    assert status["tool"] == tool
+
+
+def test_last_and_next_tool_are_tools_not_gates() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [3, 4, 2, 1, 0]
+    mmu.current_operation = Operation(
+        OperationKind.TOOL_CHANGE, from_tool=0, to_tool=1, from_gate=3, to_gate=4
+    )
+    status = MmuStatus(mmu).get_status(0.0)
+    assert status["last_tool"] == 0
+    assert status["next_tool"] == 1
 
 
 def test_gate_arrays_reflect_gate_map() -> None:

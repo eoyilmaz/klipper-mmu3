@@ -99,6 +99,7 @@ IS_DIGIT = re.compile(r"[0-9\-.]+")
 
 TOTAL_STATS_VARIABLE = "mmu_total_stats"
 GATE_MAP_VARIABLE = "mmu_gate_map"
+TTG_MAP_VARIABLE = "mmu_ttg_map"
 # the names before the [mmu3 MMU3] -> [mmu] rename, read when the new
 # variable isn't saved yet
 LEGACY_VARIABLES = {
@@ -183,6 +184,11 @@ class Operation:
         from_tool (None | int): The tool that was loaded when the operation
             started.
         to_tool (None | int): The tool the operation is trying to end up with
+            loaded. ``None`` for pure unloads / homing, or a gate no tool maps
+            to.
+        from_gate (None | int): The gate that was loaded when the operation
+            started.
+        to_gate (None | int): The gate the operation is trying to end up with
             loaded. ``None`` for pure unloads / homing.
     """
 
@@ -191,10 +197,14 @@ class Operation:
         kind: OperationKind,
         from_tool: None | int = None,
         to_tool: None | int = None,
+        from_gate: None | int = None,
+        to_gate: None | int = None,
     ) -> None:
         self.kind = kind
         self.from_tool = from_tool
         self.to_tool = to_tool
+        self.from_gate = from_gate
+        self.to_gate = to_gate
         self.filament_pos_at_fail: None | FilamentPos = None
         self.error: str = ""
 
@@ -202,7 +212,7 @@ class Operation:
     def target_pos(self) -> FilamentPos:
         """Return the filament position this operation is trying to reach."""
         loads = (OperationKind.TOOL_CHANGE, OperationKind.LOAD)
-        if self.kind in loads and self.to_tool is not None:
+        if self.kind in loads and self.to_gate is not None:
             return FilamentPos.LOADED
         return FilamentPos.UNLOADED
 
@@ -213,18 +223,16 @@ class Operation:
             str: e.g. ``"Tool change T1 => T2 - stopped with filament at the
             extruder"``.
         """
-        if self.kind == OperationKind.TOOL_CHANGE and self.from_tool is not None:
-            what = f"Tool change T{self.from_tool} => T{self.to_tool}"
+        from_text = tool_text(self.from_tool, self.from_gate)
+        to_text = tool_text(self.to_tool, self.to_gate)
+        if self.kind == OperationKind.TOOL_CHANGE and from_text:
+            what = f"Tool change {from_text} => {to_text}"
         elif self.kind in (OperationKind.TOOL_CHANGE, OperationKind.LOAD):
-            what = f"Load T{self.to_tool}"
+            what = f"Load {to_text}"
         elif self.kind == OperationKind.UNLOAD:
-            what = (
-                f"Unload T{self.from_tool}"
-                if self.from_tool is not None
-                else "Unload filament"
-            )
+            what = f"Unload {from_text}" if from_text else "Unload filament"
         elif self.kind == OperationKind.CUT:
-            what = f"Cut T{self.to_tool}"
+            what = f"Cut {to_text}"
         else:
             what = "Home MMU"
 
@@ -329,34 +337,129 @@ class OperationStats:
         return stats
 
 
-def get_gate_param(gcmd: None | GCodeCommand, minval: None | int = None) -> None | int:
-    """Return the gate given with ``GATE=``, ``TOOL=`` or ``VALUE=``.
+def tool_text(tool: None | int, gate: None | int) -> str:
+    """Return how a tool / gate pair is named in messages.
 
-    ``GATE=`` and ``TOOL=`` are Happy Hare style, ``VALUE=`` is the old MMU3
-    style. They are read in that order. Tools are gates on the MMU3 (no
-    remapping), so ``TOOL=n`` means gate ``n``.
+    Args:
+        tool (None | int): The tool, None if unknown.
+        gate (None | int): The gate, None if unknown.
+
+    Returns:
+        str: ``T<tool>``, ``gate <gate>`` if no tool maps to the gate, or an
+            empty string if both are unknown.
+    """
+    if tool is not None:
+        return f"T{tool}"
+    if gate is not None:
+        return f"gate {gate}"
+    return ""
+
+
+def default_ttg_map(num_gates: int) -> list[int]:
+    """Return the default tool-to-gate map, tool n is gate n.
+
+    Args:
+        num_gates (int): The number of gates (and tools).
+
+    Returns:
+        list[int]: The identity map.
+    """
+    return list(range(num_gates))
+
+
+def ttg_map_from_saved(num_gates: int, value: object) -> list[int]:
+    """Return the tool-to-gate map saved with ``save_variables``.
+
+    A missing, corrupt or stale map (e.g. saved with a different number of
+    gates) falls back to the default map.
+
+    Args:
+        num_gates (int): The number of gates (and tools).
+        value (object): The saved value.
+
+    Returns:
+        list[int]: The tool-to-gate map.
+    """
+    if (
+        isinstance(value, (list, tuple))
+        and len(value) == num_gates
+        and all(
+            isinstance(gate, int)
+            and not isinstance(gate, bool)
+            and 0 <= gate < num_gates
+            for gate in value
+        )
+    ):
+        return list(value)
+    return default_ttg_map(num_gates)
+
+
+def map_tool_to_gate(tool: int, ttg_map: None | list[int]) -> int:
+    """Return the gate a tool maps to.
+
+    Args:
+        tool (int): The tool.
+        ttg_map (None | list[int]): The tool-to-gate map, None for the
+            default map.
+
+    Returns:
+        int: The mapped gate, or the tool itself if it is not in the map
+            (e.g. ``-1`` or an invalid tool, left for the caller to reject).
+    """
+    if ttg_map is not None and 0 <= tool < len(ttg_map):
+        return ttg_map[tool]
+    return tool
+
+
+def get_tool_and_gate_params(
+    gcmd: None | GCodeCommand,
+    ttg_map: None | list[int] = None,
+    minval: None | int = None,
+) -> tuple[None | int, None | int]:
+    """Return the tool and gate given with ``TOOL=`` and ``GATE=``.
+
+    ``GATE=`` bypasses the tool-to-gate map, a ``TOOL=`` alone is resolved to
+    its gate through it.
+
+    Args:
+        gcmd (None | GCodeCommand): The G-code command.
+        ttg_map (None | list[int]): The tool-to-gate map, None for the
+            default map.
+        minval (None | int): The smallest accepted value.
+
+    Returns:
+        tuple[None | int, None | int]: The tool (None if no ``TOOL=``) and
+            the gate (None if no parameter is given).
+    """
+    if gcmd is None:
+        return None, None
+    gate = gcmd.get_int("GATE", None, minval=minval)
+    tool = gcmd.get_int("TOOL", None, minval=minval)
+    if gate is None and tool is not None:
+        gate = map_tool_to_gate(tool, ttg_map)
+    return tool, gate
+
+
+def get_gate_param(
+    gcmd: None | GCodeCommand,
+    minval: None | int = None,
+    ttg_map: None | list[int] = None,
+) -> None | int:
+    """Return the gate given with ``GATE=`` or ``TOOL=``.
+
+    See :func:`get_tool_and_gate_params`, ``TOOL=`` is resolved to its gate
+    through ``ttg_map``.
 
     Args:
         gcmd (None | GCodeCommand): The G-code command.
         minval (None | int): The smallest accepted value.
-
-    Raises:
-        gcmd.error: If ``GATE=`` and ``TOOL=`` are both given and differ.
+        ttg_map (None | list[int]): The tool-to-gate map, None for the
+            default map.
 
     Returns:
         None | int: The gate, None if no parameter is given.
     """
-    if gcmd is None:
-        return None
-    gate = gcmd.get_int("GATE", None, minval=minval)
-    tool = gcmd.get_int("TOOL", None, minval=minval)
-    if gate is not None and tool is not None and gate != tool:
-        raise gcmd.error(f"GATE={gate} and TOOL={tool} differ, give only one.")
-    if gate is None:
-        gate = tool
-    if gate is None:
-        gate = gcmd.get_int("VALUE", None, minval=minval)
-    return gate
+    return get_tool_and_gate_params(gcmd, ttg_map=ttg_map, minval=minval)[1]
 
 
 def get_gate_list_param(gcmd: GCodeCommand, name: str) -> None | list[int]:
@@ -412,8 +515,8 @@ def measure_duration(f: Callable) -> Callable:
             # replace with the proper command
             f_name = f"{f_name}{kwargs['tool_id']}"
         elif f_name in ["MMU_LOAD", "MMU_SELECT"]:
-            tool_id = kwargs.get("tool_id", get_gate_param(gcmd))
-            f_name = f"{f_name} {tool_id}"
+            gate = kwargs.get("gate", get_gate_param(gcmd, ttg_map=self.ttg_map))
+            f_name = f"{f_name} {gate}"
         self.display_status_msg(f"{f_name} took {duration:0.1f} seconds")
         return result
 
@@ -506,18 +609,24 @@ def track_operation(kind: OperationKind) -> Callable:
         @wraps(f)
         def wrapped_f(self: MMU, gcmd: GCodeCommand, *args, **kwargs) -> None:
             to_tool = kwargs.get("tool_id")
-            if to_tool is None and gcmd is not None:
+            to_gate = kwargs.get("gate")
+            if to_gate is None and to_tool is not None:
+                to_gate = self.tool_to_gate(to_tool)
+            if to_gate is None and gcmd is not None:
                 with contextlib.suppress(Exception):
-                    to_tool = get_gate_param(gcmd)
-            if to_tool is None and kind == OperationKind.LOAD:
+                    to_tool, to_gate = get_tool_and_gate_params(gcmd, self.ttg_map)
+            if to_gate is None and kind == OperationKind.LOAD:
                 # MMU_LOAD without a gate loads the selected one
                 with contextlib.suppress(Exception):
-                    to_tool = self.default_gate()
-            # tool n is gate n on the MMU3, so the loaded gate is the tool
+                    to_gate = self.default_gate()
+            if to_tool is None:
+                to_tool = self.gate_to_tool(to_gate)
             operation = Operation(
                 kind=kind,
-                from_tool=self.loaded_gate,
+                from_tool=self.loaded_tool,
                 to_tool=to_tool,
+                from_gate=self.loaded_gate,
+                to_gate=to_gate,
             )
             self.current_operation = operation
             result = False
@@ -1072,7 +1181,10 @@ class MMU:
         self.is_enabled = True
         self.extruder_temp = None
         # A gate is a physical lane of the MMU, a tool is what the slicer asks
-        # for (Tn). Tool n is gate n on the MMU3 (no tool to gate remapping).
+        # for (Tn). ttg_map[n] is the gate tool n loads.
+        # the tool last asked for, it names the loaded gate when more than
+        # one tool maps to it (see gate_to_tool())
+        self.selected_tool = None
         # the gate the selector / idler is at
         self.current_gate = None
         # the gate whose filament is in the path (FINDA or further)
@@ -1105,6 +1217,8 @@ class MMU:
 
         # per gate filament metadata, persisted via save_variables
         self.gate_map = GateMap(self.number_of_tools)
+        # the tool-to-gate map, persisted via save_variables
+        self.ttg_map = default_ttg_map(self.number_of_tools)
         # the Happy Hare shaped part of get_status(), read by the Mainsail /
         # Fluidd MMU panel
         self.hh_status = MmuStatus(self)
@@ -1291,10 +1405,15 @@ class MMU:
                 self.number_of_tools,
                 self.load_variable(GATE_MAP_VARIABLE),
             )
+            self.ttg_map = ttg_map_from_saved(
+                self.number_of_tools,
+                self.save_variables.allVariables.get(TTG_MAP_VARIABLE),
+            )
         else:
             self.respond_info(
                 "[save_variables] is not configured - MMU3 lifetime "
-                "statistics and the gate map will not persist across restarts."
+                "statistics, the gate map and the tool-to-gate map will not "
+                "persist across restarts."
             )
 
         self.print_stats = self.printer.lookup_object("print_stats", None)
@@ -1393,6 +1512,75 @@ class MMU:
         self.gcode.run_script_from_command(
             f"SAVE_VARIABLE VARIABLE={GATE_MAP_VARIABLE} VALUE='{value}'"
         )
+
+    def save_ttg_map(self) -> None:
+        """Persist ``ttg_map`` via ``save_variables``, if configured."""
+        if self.save_variables is None:
+            return
+        value = json.dumps(self.ttg_map)
+        self.gcode.run_script_from_command(
+            f"SAVE_VARIABLE VARIABLE={TTG_MAP_VARIABLE} VALUE='{value}'"
+        )
+
+    def set_ttg_map(self, ttg_map: list[int]) -> None:
+        """Replace the tool-to-gate map, saving it if it changed.
+
+        Args:
+            ttg_map (list[int]): The new map, ``ttg_map[tool]`` is the gate.
+        """
+        if ttg_map == self.ttg_map:
+            return
+        # a new list, so Klipper's change detection pushes it to Moonraker
+        self.ttg_map = list(ttg_map)
+        self.save_ttg_map()
+
+    def tool_to_gate(self, tool: None | int) -> None | int:
+        """Return the gate a tool loads.
+
+        Args:
+            tool (None | int): The tool.
+
+        Returns:
+            None | int: The mapped gate, None if the tool is None. An invalid
+                tool is returned as is, for the caller to reject.
+        """
+        if tool is None:
+            return None
+        return map_tool_to_gate(tool, self.ttg_map)
+
+    def gate_to_tool(self, gate: None | int) -> None | int:
+        """Return the tool a gate stands for.
+
+        The selected tool (the one last asked for) if it maps to the gate,
+        else the first tool that does.
+
+        Args:
+            gate (None | int): The gate.
+
+        Returns:
+            None | int: The tool, None if no tool maps to the gate.
+        """
+        if gate is None:
+            return None
+        if (
+            self.selected_tool is not None
+            and self.tool_to_gate(self.selected_tool) == gate
+        ):
+            return self.selected_tool
+        for tool, mapped_gate in enumerate(self.ttg_map):
+            if mapped_gate == gate:
+                return tool
+        return None
+
+    @property
+    def loaded_tool(self) -> None | int:
+        """Return the tool whose filament is in the path.
+
+        Returns:
+            None | int: The tool, None if nothing is loaded or no tool maps to
+                the loaded gate.
+        """
+        return self.gate_to_tool(self.loaded_gate)
 
     def set_gate_status(self, gate: None | int, status: int) -> None:
         """Record an observed gate availability, saving it if it changed.
@@ -1723,6 +1911,16 @@ class MMU:
                 "Show or edit the filament metadata of the gates",
             ),
             (
+                "MMU_TTG_MAP",
+                self.cmd_mmu_ttg_map,
+                "Show or edit the tool-to-gate map (TOOL= GATE= / MAP= / RESET=1)",
+            ),
+            (
+                "MMU_REMAP_TTG",
+                self.cmd_mmu_ttg_map,
+                "Same as MMU_TTG_MAP",
+            ),
+            (
                 "MMU_RUNOUT",
                 self.cmd_mmu_runout,
                 "Mark the loaded gate empty on runout (add to runout_gcode)",
@@ -1806,8 +2004,6 @@ class MMU:
 
         # Happy Hare commands without an MMU3 equivalent
         for name in (
-            "MMU_TTG_MAP",
-            "MMU_REMAP_TTG",
             "MMU_ENDLESS_SPOOL",
             "MMU_SLICER_TOOL_MAP",
             "MMU_SPOOLMAN",
@@ -2316,7 +2512,7 @@ class MMU:
         self.respond_debug(
             f"assess_filament_pos: FINDA={in_finda} switch={in_switch} "
             f"pos={self.filament_switch_sensor_position} "
-            f"-> {self.filament_pos} (filament T{self.loaded_gate})"
+            f"-> {self.filament_pos} (filament in gate {self.loaded_gate})"
         )
         return self.filament_pos
 
@@ -2426,7 +2622,7 @@ class MMU:
             return True
         if op.target_pos == FilamentPos.UNLOADED:
             return self.filament_pos == FilamentPos.UNLOADED
-        return self.filament_pos >= op.target_pos and self.loaded_gate == op.to_tool
+        return self.filament_pos >= op.target_pos and self.loaded_gate == op.to_gate
 
     def retry_pending_operation(self) -> bool:
         """Re-drive ``self.pending_operation`` after checking the sensors.
@@ -2449,12 +2645,14 @@ class MMU:
             self.assess_filament_pos()
             if op.kind == OperationKind.HOME:
                 ok = self.home_mmu()
-            elif op.kind == OperationKind.CUT and op.to_tool is not None:
-                ok = self.cut_filament_in_mmu(op.to_tool)
-            elif op.kind == OperationKind.TOOL_CHANGE and op.to_tool is not None:
-                ok = self.unload_gate() and self.load_gate(op.to_tool)
-            elif op.kind == OperationKind.LOAD and op.to_tool is not None:
-                ok = self.load_gate(op.to_tool)
+            elif op.kind == OperationKind.CUT and op.to_gate is not None:
+                ok = self.cut_filament_in_mmu(op.to_gate)
+            elif op.kind == OperationKind.TOOL_CHANGE and op.to_gate is not None:
+                if op.to_tool is not None:
+                    self.selected_tool = op.to_tool
+                ok = self.unload_gate() and self.load_gate(op.to_gate)
+            elif op.kind == OperationKind.LOAD and op.to_gate is not None:
+                ok = self.load_gate(op.to_gate)
             else:  # UNLOAD / EJECT / degenerate TOOL_CHANGE
                 ok = self.unload_gate()
         finally:
@@ -3057,7 +3255,7 @@ class MMU:
             self.display_status_msg(f"Invalid gate: {gate}")
             return False
 
-        self.respond_debug(f"Pre-loading T{gate}")
+        self.respond_debug(f"Pre-loading gate {gate}")
         self.select_gate(gate)
         if not self.load_filament_to_finda():
             return False
@@ -3470,7 +3668,7 @@ class MMU:
             self.display_status_msg("Not supported in 5in1 mode!")
             return False
 
-        self.respond_debug(f"Cutting filament T{gate} ...")
+        self.respond_debug(f"Cutting filament of gate {gate} ...")
 
         # First unload filament
         if not self.unload_gate():
@@ -3552,7 +3750,7 @@ class MMU:
         # Home the mmu
         self.home_mmu()
 
-        self.respond_debug(f"Done cutting T{gate}!")
+        self.respond_debug(f"Done cutting gate {gate}!")
         return True
 
     def load_gate(self, gate: int) -> bool:
@@ -3610,7 +3808,7 @@ class MMU:
             self.respond_debug("And no filament in FINDA")
             self.respond_debug("No need to unload!")
             return True
-        self.respond_debug(f"Loaded gate is T{self.loaded_gate}")
+        self.respond_debug(f"Loaded gate is {self.loaded_gate}")
 
         # nothing to unload, so no unload hooks either
         run_hooks = self.filament_pos > FilamentPos.UNLOADED
@@ -3618,7 +3816,7 @@ class MMU:
             return False
 
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
-            self.respond_debug(f"Cut T{self.loaded_gate}")
+            self.respond_debug(f"Cut gate {self.loaded_gate}")
             self.cut_tip()
 
         self.respond_debug(f"MMU_UNLOAD {self.loaded_gate}")
@@ -3864,24 +4062,33 @@ class MMU:
     @track_operation(OperationKind.TOOL_CHANGE)
     @measure_duration
     @auto_disable_steppers
-    def cmd_tx(self, gcmd: GCodeCommand, tool_id: int = 0) -> bool:
+    def cmd_tx(
+        self, gcmd: GCodeCommand, tool_id: int = 0, gate: None | int = None
+    ) -> bool:
         """The generic Tx command.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
             tool_id (int, optional): The tool id to load. Defaults to 0.
+            gate (None | int, optional): The gate to load, bypassing the
+                tool-to-gate map. Defaults to the gate ``tool_id`` maps to.
 
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        # tool n is gate n on the MMU3
-        gate = tool_id
+        if gate is None:
+            gate = self.tool_to_gate(tool_id)
+        previous_tool = self.loaded_tool
         previous_gate = self.loaded_gate
+        self.selected_tool = tool_id
 
+        to_text = f"T{tool_id}"
+        if gate != tool_id:
+            to_text = f"{to_text} (gate {gate})"
         if previous_gate is not None:
-            status_message = f"T{previous_gate} => T{tool_id}"
+            status_message = f"{tool_text(previous_tool, previous_gate)} => {to_text}"
         else:
-            status_message = f"T{tool_id}"
+            status_message = to_text
         self.display_status_msg(status_message)
 
         # sync the tracked position with the sensors before planning so the
@@ -3909,7 +4116,7 @@ class MMU:
         ):
             for i in range(self.tool_change_retry):
                 if i > 0:
-                    self.display_status_msg(f"Retry ({i + 1}): T{tool_id}...")
+                    self.display_status_msg(f"Retry ({i + 1}): {to_text}...")
                     # re-sync the tracked position with the sensors so the
                     # planner resumes from where the filament actually is
                     self.assess_filament_pos()
@@ -3919,7 +4126,7 @@ class MMU:
                     self.home_idler()
 
                 if not self.unload_gate():
-                    self.respond_debug(f"Unload T{self.loaded_gate} failed!")
+                    self.respond_debug(f"Unload gate {self.loaded_gate} failed!")
                     continue
 
                 # if this is the last try, do a homing move as a last resort
@@ -3927,22 +4134,16 @@ class MMU:
                     self.home_mmu()
 
                 if not self.load_gate(gate):
-                    self.respond_debug(f"Load T{tool_id} failed!")
+                    self.respond_debug(f"Load {to_text} failed!")
                     continue
                 break
             else:
                 # all retries exhausted - auto_pause promotes the tracked
                 # operation to pending_operation and shows the recovery prompt
-                if previous_gate is not None:
-                    self.respond_debug(f"T{previous_gate} => T{tool_id} failed!")
-                else:
-                    self.respond_debug(f"T{tool_id} failed!")
+                self.respond_debug(f"{status_message} failed!")
                 return False
 
-        if previous_gate is not None:
-            self.respond_debug(f"Done T{previous_gate} => T{tool_id}")
-        else:
-            self.respond_debug(f"Done T{tool_id}")
+        self.respond_debug(f"Done {status_message}")
         return True
 
     @auto_pause
@@ -3958,8 +4159,7 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        # tool n is gate n on the MMU3
-        return self.cut_filament_in_mmu(tool_id)
+        return self.cut_filament_in_mmu(self.tool_to_gate(tool_id))
 
     @auto_disable_steppers
     def cmd_unlock(self, gcmd: GCodeCommand) -> bool:
@@ -3988,7 +4188,9 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = get_gate_param(gcmd)
+        tool, gate = get_tool_and_gate_params(gcmd, self.ttg_map)
+        if tool is not None:
+            self.selected_tool = tool
         if gate is None:
             gate = self.default_gate()
         self.assess_filament_pos()
@@ -4038,7 +4240,9 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = get_gate_param(gcmd)
+        tool, gate = get_tool_and_gate_params(gcmd, self.ttg_map)
+        if tool is not None:
+            self.selected_tool = tool
         return self.select_gate(gate)
 
     @auto_pause
@@ -4117,7 +4321,7 @@ class MMU:
         return self.form_tip_standalone(cut=True)
 
     def cmd_mmu_load(self, gcmd: GCodeCommand) -> bool:
-        """Load the filament of a gate (``GATE=`` / ``VALUE=``) to the nozzle.
+        """Load the filament of a gate (``GATE=`` / ``TOOL=``) to the nozzle.
 
         Without a gate the selected gate is loaded.
 
@@ -4130,7 +4334,10 @@ class MMU:
         if gcmd.get_int("EXTRUDER_ONLY", 0):
             self.respond_info("MMU_LOAD EXTRUDER_ONLY=1 is not supported on MMU3.")
             return False
-        if get_gate_param(gcmd) is None and self.default_gate() is None:
+        if (
+            get_gate_param(gcmd, ttg_map=self.ttg_map) is None
+            and self.default_gate() is None
+        ):
             self.respond_info("No gate selected, use MMU_LOAD GATE=<gate>.")
             return False
         return self.cmd_load_gate(gcmd)
@@ -4161,14 +4368,14 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = get_gate_param(gcmd)
+        gate = get_gate_param(gcmd, ttg_map=self.ttg_map)
         if gate is not None and gate != self.loaded_gate:
             self.respond_info(f"Gate {gate} is not loaded, nothing to eject.")
             return True
         return self.cmd_m702(gcmd)
 
     def cmd_mmu_select(self, gcmd: GCodeCommand) -> bool:
-        """Select a gate (``GATE=`` / ``TOOL=`` / ``VALUE=``).
+        """Select a gate (``GATE=`` / ``TOOL=``).
 
         Refuses to move the selector away from a gate whose filament is
         still in the path, as that would drag the selector across it.
@@ -4182,14 +4389,14 @@ class MMU:
         if gcmd.get_int("BYPASS", 0):
             self.respond_info("MMU_SELECT BYPASS=1 is not supported on MMU3.")
             return False
-        gate = get_gate_param(gcmd)
+        gate = get_gate_param(gcmd, ttg_map=self.ttg_map)
         if (
             self.filament_pos != FilamentPos.UNLOADED
             and self.loaded_gate is not None
             and gate != self.loaded_gate
         ):
             self.respond_info(
-                f"T{self.loaded_gate} is loaded, unload it before "
+                f"Gate {self.loaded_gate} is loaded, unload it before "
                 f"selecting another gate."
             )
             return False
@@ -4198,17 +4405,28 @@ class MMU:
     def cmd_mmu_change_tool(self, gcmd: GCodeCommand) -> bool:
         """Change to a tool (``TOOL=``) or gate (``GATE=``), same as ``Tn``.
 
+        ``TOOL=`` loads the gate the tool maps to, ``GATE=`` bypasses the
+        tool-to-gate map and loads the gate as the tool that maps to it.
+
         Args:
             gcmd (GCodeCommand): The G-code command.
 
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = get_gate_param(gcmd)
+        tool, gate = get_tool_and_gate_params(gcmd, self.ttg_map)
         if not self.gate_map.is_valid_gate(gate):
             self.respond_info(f"MMU_CHANGE_TOOL needs a valid TOOL= or GATE= ({gate})")
             return False
-        return self.cmd_tx(gcmd, tool_id=gate)
+        if gcmd.get_int("GATE", None) is not None:
+            # GATE= names the gate, load it as the tool mapped to it
+            tool = self.gate_to_tool(gate)
+            if tool is None:
+                self.respond_info(
+                    f"No tool maps to gate {gate}, map one with MMU_TTG_MAP."
+                )
+                return False
+        return self.cmd_tx(gcmd, tool_id=tool, gate=gate)
 
     def cmd_mmu_preload(self, gcmd: GCodeCommand) -> bool:
         """Check a gate by feeding its filament to FINDA and back.
@@ -4221,7 +4439,7 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = get_gate_param(gcmd)
+        gate = get_gate_param(gcmd, ttg_map=self.ttg_map)
         if gate is None:
             gate = self.current_gate
         if not self.gate_map.is_valid_gate(gate):
@@ -4229,7 +4447,7 @@ class MMU:
             return False
         if self.filament_pos != FilamentPos.UNLOADED:
             self.respond_info(
-                f"T{self.loaded_gate} is loaded, unload it before preloading."
+                f"Gate {self.loaded_gate} is loaded, unload it before preloading."
             )
             return False
         return self.cmd_preload_filament_to_finda(gcmd, gate=gate)
@@ -4240,7 +4458,8 @@ class MMU:
         """Return the gates ``MMU_CHECK_GATE`` / ``MMU_CHECK_GATES`` check.
 
         Reads Happy Hare's ``ALL=1``, ``GATES=``, ``TOOLS=``, ``GATE=`` and
-        ``TOOL=`` in that order. Tools are gates on the MMU3 (no remapping).
+        ``TOOL=`` in that order. Tools are resolved to their gates through the
+        tool-to-gate map.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
@@ -4260,11 +4479,13 @@ class MMU:
 
         gates = get_gate_list_param(gcmd, "GATES")
         if gates is None:
-            gates = get_gate_list_param(gcmd, "TOOLS")
+            tools = get_gate_list_param(gcmd, "TOOLS")
+            if tools is not None:
+                gates = [self.tool_to_gate(tool) for tool in tools]
         if gates is None:
             gate = gcmd.get_int("GATE", None)
             if gate is None:
-                gate = gcmd.get_int("TOOL", None)
+                gate = self.tool_to_gate(gcmd.get_int("TOOL", None))
             if gate is not None:
                 gates = [gate]
         if gates is None:
@@ -4321,7 +4542,7 @@ class MMU:
             return False
         if self.filament_pos != FilamentPos.UNLOADED:
             self.respond_info(
-                f"T{self.loaded_gate} is loaded, unload it before checking gates."
+                f"Gate {self.loaded_gate} is loaded, unload it before checking gates."
             )
             return False
         if self.enable_no_selector_mode:
@@ -4355,7 +4576,9 @@ class MMU:
 
         ``GATE=`` / ``TOOL=`` and ``LOADED=0|1`` tell the MMU3 where the
         filament actually is (e.g. after fixing it by hand); the sensors still
-        have the final say.
+        have the final say. A ``TOOL=`` alone is the gate it maps to,
+        ``TOOL=`` with a different ``GATE=`` remaps the tool to that gate
+        (Happy Hare's ``MMU_RECOVER TOOL=2 GATE=3``).
 
         Args:
             gcmd (GCodeCommand): The G-code command.
@@ -4363,17 +4586,30 @@ class MMU:
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
-        gate = get_gate_param(gcmd, minval=-1)
+        tool, gate = get_tool_and_gate_params(gcmd, self.ttg_map, minval=-1)
         loaded = gcmd.get_int("LOADED", None, minval=0, maxval=1)
 
         if gate is None and loaded is None:
             if self.pending_operation is not None:
                 return self.cmd_mmu_retry(gcmd)
         else:
+            if (
+                tool is not None
+                and tool != -1
+                and not self.gate_map.is_valid_gate(tool)
+            ):
+                raise gcmd.error(f"Invalid tool: {tool}")
             if gate is not None:
                 if gate != -1 and not self.gate_map.is_valid_gate(gate):
                     raise gcmd.error(f"Invalid gate: {gate}")
                 self.loaded_gate = gate if gate >= 0 else None
+            if tool is not None and tool >= 0:
+                self.selected_tool = tool
+                if gate is not None and gate >= 0 and self.tool_to_gate(tool) != gate:
+                    ttg_map = list(self.ttg_map)
+                    ttg_map[tool] = gate
+                    self.set_ttg_map(ttg_map)
+                    self.respond_info(f"Remapped T{tool} to gate {gate}.")
             if loaded == 1:
                 if self.loaded_gate is None:
                     raise gcmd.error("LOADED=1 needs a GATE=")
@@ -4384,9 +4620,12 @@ class MMU:
 
         self.assess_filament_pos()
         self.sync_active_spool()
+        loaded_text = tool_text(self.loaded_tool, self.loaded_gate) or "none"
+        if self.loaded_gate is not None and self.loaded_tool is not None:
+            loaded_text = f"{loaded_text} (gate {self.loaded_gate})"
         self.respond_info(
             f"Filament position: {self.filament_pos}, filament: "
-            f"T{self.loaded_gate}, selected: T{self.current_gate}"
+            f"{loaded_text}, selected gate: {self.current_gate}"
         )
         return True
 
@@ -4476,6 +4715,98 @@ class MMU:
         if not gcmd.get_int("QUIET", 0):
             self.print_gate_map()
         return True
+
+    def cmd_mmu_ttg_map(self, gcmd: GCodeCommand) -> bool:
+        """Show or edit the tool-to-gate map, Happy Hare's ``MMU_TTG_MAP``.
+
+        ``TOOL= GATE=`` maps a tool to a gate, ``MAP=g,g,...`` sets the whole
+        map (the gate of each tool, in tool order), ``RESET=1`` maps tool n to
+        gate n again. ``GATE= AVAILABLE=`` also sets the gate's availability.
+        ``QUIET=1`` does not print the map, no arguments prints it.
+        ``MMU_REMAP_TTG`` is the same command.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        num_gates = self.number_of_tools
+        quiet = gcmd.get_int("QUIET", 0, minval=0, maxval=1)
+        ttg_map_param = gcmd.get("MAP", None)
+        tool = gcmd.get_int("TOOL", None, minval=0, maxval=num_gates - 1)
+        gate = gcmd.get_int("GATE", None, minval=0, maxval=num_gates - 1)
+        available = gcmd.get_int(
+            "AVAILABLE", None, minval=GATE_EMPTY, maxval=GATE_AVAILABLE
+        )
+
+        if gcmd.get_int("RESET", 0, minval=0, maxval=1):
+            self.set_ttg_map(default_ttg_map(num_gates))
+        elif ttg_map_param is not None:
+            self.set_ttg_map(self.parse_ttg_map(gcmd, ttg_map_param))
+        elif gate is not None:
+            if tool is not None:
+                ttg_map = list(self.ttg_map)
+                ttg_map[tool] = gate
+                self.set_ttg_map(ttg_map)
+            if available is not None:
+                self.set_gate_status(gate, available)
+        elif tool is not None:
+            raise gcmd.error("MMU_TTG_MAP TOOL= needs a GATE=")
+        else:
+            quiet = 0
+
+        if not quiet:
+            self.print_ttg_map()
+        return True
+
+    def parse_ttg_map(self, gcmd: GCodeCommand, value: str) -> list[int]:
+        """Return the tool-to-gate map given with ``MMU_TTG_MAP MAP=``.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            value (str): The comma separated gates, in tool order.
+
+        Raises:
+            gcmd.error: If a gate is not a valid gate or there is not one
+                gate per tool.
+
+        Returns:
+            list[int]: The map.
+        """
+        parts = [part.strip() for part in value.strip().strip("'\"").split(",")]
+        if len(parts) != self.number_of_tools:
+            raise gcmd.error(
+                f"MAP= has {len(parts)} gates, it needs one for each of the "
+                f"{self.number_of_tools} tools."
+            )
+        ttg_map = []
+        for part in parts:
+            try:
+                gate = int(part)
+            except ValueError:
+                raise gcmd.error(f"Invalid gate in MAP=: {part}") from None
+            if not self.gate_map.is_valid_gate(gate):
+                raise gcmd.error(f"Invalid gate in MAP=: {gate}")
+            ttg_map.append(gate)
+        return ttg_map
+
+    def print_ttg_map(self) -> None:
+        """Print the tool-to-gate map to the console."""
+        lines = ["TTG map:"]
+        loaded_tool = self.loaded_tool
+        for tool, gate in enumerate(self.ttg_map):
+            parts = [f"T{tool} -> gate {gate}"]
+            if self.gate_map.is_valid_gate(gate):
+                info = self.gate_map[gate]
+                parts.append(info.material or "-")
+                if info.name:
+                    parts.append(info.name)
+                parts.append(f"[{GATE_STATUS_TEXT.get(info.status, info.status)}]")
+            if tool == loaded_tool:
+                parts.append("<- loaded")
+            lines.append(" ".join(str(p) for p in parts))
+        self.respond_info("\n".join(lines))
 
     @staticmethod
     def parse_gate_map_fields(gcmd: GCodeCommand) -> dict:
@@ -4707,16 +5038,17 @@ class MMU:
             bool: Always True.
         """
 
-        def gate_text(gate: None | int) -> str:
-            return "none" if gate is None else f"T{gate}"
+        def text(value: None | int, prefix: str = "") -> str:
+            return "none" if value is None else f"{prefix}{value}"
 
         lines = [
             "MMU status:",
             f"Enabled: {'yes' if self.is_enabled else 'no'}",
             f"Homed: {'yes' if self.is_homed else 'no'}",
             f"Paused: {'yes' if self.is_paused else 'no'}",
-            f"Selected gate: {gate_text(self.current_gate)}",
-            f"Loaded gate: {gate_text(self.loaded_gate)}",
+            f"Selected gate: {text(self.current_gate)}",
+            f"Loaded gate: {text(self.loaded_gate)}",
+            f"Loaded tool: {text(self.loaded_tool, 'T')}",
             f"Filament position: {self.filament_pos.name}",
             f"Action: {self.action}",
         ]

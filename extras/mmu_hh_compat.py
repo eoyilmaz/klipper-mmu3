@@ -169,15 +169,15 @@ class MmuStatus:
     def tool(self) -> int:
         """Return the loaded tool, falling back to the selected one.
 
-        Tool n is gate n on the MMU3, so this is the loaded gate.
+        The tool that maps to the loaded gate (or the selected gate) in the
+        tool-to-gate map, see :meth:`extras.mmu.MMU.gate_to_tool`.
 
         Returns:
             int: The tool index or -1.
         """
         mmu = self.mmu
-        if mmu.loaded_gate is not None:
-            return mmu.loaded_gate
-        return _or_unknown(mmu.current_gate)
+        gate = mmu.loaded_gate if mmu.loaded_gate is not None else mmu.current_gate
+        return _or_unknown(mmu.gate_to_tool(gate))
 
     def print_state(self, eventtime: float) -> str:
         """Return the Happy Hare ``print_state``.
@@ -316,7 +316,7 @@ class MmuStatus:
                 if mmu.pending_operation is not None
                 else ""
             ),
-            "ttg_map": list(range(num_gates)),
+            "ttg_map": list(mmu.ttg_map),
             "endless_spool_groups": list(range(num_gates)),
             "endless_spool": 0,
             "endless_spool_enabled": 0,

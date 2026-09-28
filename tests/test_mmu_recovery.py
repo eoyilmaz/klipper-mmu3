@@ -32,6 +32,8 @@ from extras.mmu import (  # noqa: E402
 def make_mmu() -> MMU:
     """Build a bare MMU3 instance without running __init__ or touching Klipper."""
     mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.selected_tool = None
     # no user macros are defined
     mmu.printer = types.SimpleNamespace(lookup_object=lambda name, default=None: None)
     mmu.is_paused = False
@@ -105,7 +107,7 @@ def test_operation_describe_includes_error() -> None:
 
 
 @pytest.mark.parametrize(
-    "kind,to_tool,expected",
+    "kind,to_gate,expected",
     [
         (OperationKind.TOOL_CHANGE, 2, FilamentPos.LOADED),
         (OperationKind.LOAD, 0, FilamentPos.LOADED),
@@ -114,8 +116,20 @@ def test_operation_describe_includes_error() -> None:
         (OperationKind.HOME, None, FilamentPos.UNLOADED),
     ],
 )
-def test_operation_target_pos(kind, to_tool, expected):
-    assert Operation(kind, to_tool=to_tool).target_pos is expected
+def test_operation_target_pos(kind, to_gate, expected):
+    assert Operation(kind, to_gate=to_gate).target_pos is expected
+
+
+def test_operation_describe_names_a_gate_without_a_tool() -> None:
+    op = Operation(OperationKind.LOAD, to_gate=3)
+    assert op.describe() == "Load gate 3"
+
+
+def test_operation_describe_prefers_the_tool_over_the_gate() -> None:
+    op = Operation(
+        OperationKind.TOOL_CHANGE, from_tool=0, to_tool=1, from_gate=2, to_gate=4
+    )
+    assert op.describe() == "Tool change T0 => T1"
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +224,8 @@ def assess_mmu(
     ),
 ) -> MMU:
     mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.selected_tool = None
     mmu.filament_pos = tracked
     mmu.current_gate = 1
     mmu.loaded_gate = 1
