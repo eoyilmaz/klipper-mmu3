@@ -209,7 +209,7 @@ def test_pre_unload_runs_before_the_filament_cut() -> None:
     assert mmu.unload_tool() is True
     assert macro_calls(mmu) == [
         PRE_UNLOAD_MACRO,
-        "CUT_FILAMENT_IN_EXTRUDER",
+        "_MMU_CUT_TIP",
         POST_UNLOAD_MACRO,
     ]
 

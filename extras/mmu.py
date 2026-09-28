@@ -118,6 +118,9 @@ POST_UNLOAD_MACRO = "_MMU_POST_UNLOAD"
 PRE_LOAD_MACRO = "_MMU_PRE_LOAD"
 POST_LOAD_MACRO = "_MMU_POST_LOAD"
 ACTION_CHANGED_MACRO = "_MMU_ACTION_CHANGED"
+# tip forming (ramming) and the in-extruder cut, Happy Hare's names for them
+FORM_TIP_MACRO = "_MMU_FORM_TIP"
+CUT_TIP_MACRO = "_MMU_CUT_TIP"
 
 logger = logging.getLogger(__name__)
 PRINT_STATS_POLL_INTERVAL = 10.0
@@ -1276,6 +1279,8 @@ class MMU:
             "display_status"
         )
 
+        self.check_tip_macros()
+
         self.save_variables = self.printer.lookup_object("save_variables", None)
         if self.save_variables is not None:
             self.total_stats = OperationStats.from_dict(
@@ -1485,6 +1490,28 @@ class MMU:
             )
         except self.printer.command_error as e:
             self.respond_info(f"{ACTION_CHANGED_MACRO} failed: {e}")
+
+    def check_tip_macros(self) -> None:
+        """Stop Klipper if a tip forming / cutting macro is missing.
+
+        ``_MMU_FORM_TIP`` is always needed, ``_MMU_CUT_TIP`` only with
+        ``enable_filament_cutter``. They were called ``RAMMING_SLICER`` and
+        ``CUT_FILAMENT_IN_EXTRUDER`` before, a config copied from an older
+        ``mmu.cfg`` still has the old names.
+
+        Raises:
+            configfile.error: If a needed macro is not defined.
+        """
+        required = [(FORM_TIP_MACRO, "RAMMING_SLICER")]
+        if self.enable_filament_cutter:
+            required.append((CUT_TIP_MACRO, "CUT_FILAMENT_IN_EXTRUDER"))
+        for name, old_name in required:
+            if not self.is_macro_defined(name):
+                raise self.printer.config_error(
+                    f"[gcode_macro {name}] is not defined. [gcode_macro "
+                    f"{old_name}] was renamed to [gcode_macro {name}], rename "
+                    "it in your mmu.cfg."
+                )
 
     def is_macro_defined(self, name: str) -> bool:
         """Whether a ``[gcode_macro <name>]`` is defined.
@@ -1713,6 +1740,16 @@ class MMU:
                 "Retry the failed operation and resume the print (FORCE=1)",
             ),
             ("MMU_MOTORS_OFF", self.cmd_motors_off, "Turn off the MMU motors"),
+            (
+                "MMU_FORM_TIP",
+                self.cmd_mmu_form_tip,
+                "Form the tip of the loaded filament (ramming)",
+            ),
+            (
+                "MMU_CUT",
+                self.cmd_mmu_cut,
+                "Cut the loaded filament in the extruder",
+            ),
             (
                 "MMU_PRINT_START",
                 self.cmd_mmu_print_start,
@@ -2765,10 +2802,77 @@ class MMU:
         self.respond_debug("Filament removed")
         return True
 
-    def ramming_slicer(self) -> None:
-        """Call the ramming process."""
-        self.gcode.run_script_from_command("RAMMING_SLICER")
-        self.toolhead.wait_moves()
+    def form_tip(self) -> None:
+        """Form the filament tip by ramming, reporting ``Forming Tip``."""
+        with self.running_action(ACTION_FORMING_TIP):
+            self.gcode.run_script_from_command(FORM_TIP_MACRO)
+            self.toolhead.wait_moves()
+
+    def cut_tip(self) -> None:
+        """Cut the filament in the extruder, reporting ``Cutting Tip``."""
+        with self.running_action(ACTION_CUTTING_TIP):
+            self.gcode.run_script_from_command(CUT_TIP_MACRO)
+            self.toolhead.wait_moves()
+
+    def form_tip_standalone(self, cut: bool = False) -> bool:
+        """Form the tip (or cut) of the loaded filament outside an unload.
+
+        Runs the same step as an unload (:meth:`form_tip` / :meth:`cut_tip`
+        with the idler parked), so it can be tested and tuned on its own. The
+        filament is left in the extruder, no longer ``LOADED``.
+
+        Args:
+            cut (bool): Cut the filament instead of ramming it.
+
+        Returns:
+            bool: True if the tip was formed / cut, False otherwise.
+        """
+        name = "MMU_CUT" if cut else "MMU_FORM_TIP"
+        if not self.is_enabled:
+            self.display_status_msg("MMU is not enabled!")
+            return False
+        if self.is_paused:
+            self.display_status_msg(f"MMU is paused, cannot run {name}!")
+            return False
+        if cut and not self.enable_filament_cutter:
+            self.display_status_msg(
+                "MMU_CUT needs `enable_filament_cutter: True` in [mmu]."
+            )
+            return False
+        if self.assess_filament_pos() != FilamentPos.LOADED:
+            self.display_status_msg(f"No filament loaded, cannot run {name}!")
+            return False
+        if not self.validate_extruder_is_hot_enough():
+            return False
+        if self.current_tool is not None and not self.unselect_tool():
+            return False
+
+        with (
+            FilamentSwitchSensorManager(
+                self.filament_switch_sensor,
+                False,
+                self.respond_debug,
+                self.reactor,
+                self.toolhead,
+            ),
+            FilamentMotionSensorManager(
+                self.filament_motion_sensor,
+                False,
+                self.respond_debug,
+                self.reactor,
+                self.toolhead,
+            ),
+        ):
+            if cut:
+                self.cut_tip()
+            else:
+                self.form_tip()
+
+        # the filament is still in the extruder but retracted from the nozzle,
+        # the sensors may show it is even further back
+        self.filament_pos = min(self.filament_pos, FilamentPos.IN_HOTEND)
+        self.assess_filament_pos()
+        return True
 
     def unload_filament_from_hotend_with_ramming(self) -> bool:
         """Unload from extruder with ramming.
@@ -2790,12 +2894,9 @@ class MMU:
         self.respond_debug("Ramming and Unloading Filament...")
 
         if self.enable_filament_cutter:
-            with self.running_action(ACTION_CUTTING_TIP):
-                self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
-                self.toolhead.wait_moves()
+            self.cut_tip()
         else:
-            with self.running_action(ACTION_FORMING_TIP):
-                self.ramming_slicer()
+            self.form_tip()
 
         if not self.unload_filament_from_hotend():
             return False
@@ -3530,10 +3631,7 @@ class MMU:
 
         if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
             self.respond_debug(f"Cut T{self.current_filament}")
-            # cut the filament in extruder
-            with self.running_action(ACTION_CUTTING_TIP):
-                self.gcode.run_script_from_command("CUT_FILAMENT_IN_EXTRUDER")
-                self.toolhead.wait_moves()
+            self.cut_tip()
 
         self.respond_debug(f"MMU_UNLOAD {self.current_filament}")
         # planner runs only the steps still needed to reach UNLOADED
@@ -4002,6 +4100,30 @@ class MMU:
             bool: True if the steppers are disabled.
         """
         return self.disable_steppers()
+
+    @auto_disable_steppers
+    def cmd_mmu_form_tip(self, gcmd: GCodeCommand) -> bool:
+        """Form the tip of the loaded filament, ``MMU_FORM_TIP``.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if the tip was formed, False otherwise.
+        """
+        return self.form_tip_standalone()
+
+    @auto_disable_steppers
+    def cmd_mmu_cut(self, gcmd: GCodeCommand) -> bool:
+        """Cut the loaded filament in the extruder, ``MMU_CUT``.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if the filament was cut, False otherwise.
+        """
+        return self.form_tip_standalone(cut=True)
 
     def cmd_mmu_load(self, gcmd: GCodeCommand) -> bool:
         """Load the filament of a gate (``GATE=`` / ``VALUE=``) to the nozzle.
