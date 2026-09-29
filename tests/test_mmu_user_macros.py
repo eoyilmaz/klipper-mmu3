@@ -68,6 +68,8 @@ def make_mmu(macros=(), failing=()) -> MMU:
     """
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None
     mmu.printer = FakePrinter()
     mmu.printer.macros = set(macros) | set(failing)

@@ -317,9 +317,10 @@ class MmuStatus:
                 else ""
             ),
             "ttg_map": list(mmu.ttg_map),
-            "endless_spool_groups": list(range(num_gates)),
-            "endless_spool": 0,
-            "endless_spool_enabled": 0,
+            "endless_spool_groups": list(mmu.endless_spool_groups),
+            # Happy Hare's deprecated name of endless_spool_enabled
+            "endless_spool": int(mmu.endless_spool_enabled),
+            "endless_spool_enabled": int(mmu.endless_spool_enabled),
             "gate_status": gate_map.statuses(),
             "gate_filament_name": gate_map.names(),
             "gate_material": gate_map.materials(),

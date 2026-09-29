@@ -353,7 +353,8 @@ The extension supplies all the necessary gcode commands.
    ```
 
    A gate is marked empty when loading it to FINDA fails. To also mark it
-   empty when the spool runs out during a print, add `MMU_RUNOUT` to the
+   empty when the spool runs out during a print, and to continue the print
+   with endless spool (see `MMU_ENDLESS_SPOOL`), call `MMU_RUNOUT` from the
    `runout_gcode` of your filament switch sensor (Klipper has no runout event
    the MMU could listen to):
 
@@ -363,15 +364,44 @@ The extension supplies all the necessary gcode commands.
    pause_on_runout: False
    runout_gcode:
      MMU_RUNOUT
-     PAUSE
    ```
+
+   `MMU_RUNOUT` marks the loaded gate empty and, with endless spool, loads
+   the next gate of its group and the print continues. Otherwise it pauses
+   the print with `PAUSE`, so don't add a `PAUSE` after it (an older config
+   with one still works, but pauses after an endless spool swap too).
 
    Klipper only runs `runout_gcode` while printing, and the MMU turns the
    sensor off while it loads or unloads, so tool changes never mark a gate
-   empty. `MMU_RUNOUT` also does nothing when the MMU is busy or no filament
-   is loaded. If FINDA still detects filament, the filament broke or got stuck
-   between FINDA and the sensor rather than running out, so the gate is not
-   marked empty (this is common with a `pre_gears` sensor).
+   empty. `MMU_RUNOUT` ignores the runout while the MMU is busy. If no
+   filament is loaded or the MMU is disabled, it only pauses the print. If
+   FINDA still detects filament, the spool didn't run out: the nozzle is
+   clogged, or the filament is tangled, broken or stuck between FINDA and the
+   sensor (this is common with a `pre_gears` sensor). The gate is then not
+   marked empty and the print pauses.
+
+   A filament motion sensor (or another runout sensor) between FINDA and the
+   filament switch sensor can call `MMU_RUNOUT` too:
+
+   ```ini
+   [filament_motion_sensor encoder_sensor]
+   switch_pin: ...
+   pause_on_runout: False
+   runout_gcode:
+     MMU_RUNOUT
+   ```
+
+   It fires before the switch sensor. `MMU_RUNOUT` then uses FINDA to tell a
+   clog from a runout: with filament in FINDA it pauses the print as above,
+   with FINDA empty the spool ran out. The end of the filament is then past
+   the MMU and can't be unloaded, so the gate is marked empty and the print
+   uses up the rest of the filament. When its end reaches the switch sensor,
+   the switch sensor's `MMU_RUNOUT` continues with endless spool or pauses. If
+   the extruder uses more than `runout_tail_length` (in `[mmu]`, default
+   100 mm) before that, the end of the filament is stuck and the print
+   pauses. Set it to the filament length between the two sensors plus a
+   margin. Without FINDA (`enable_no_selector_mode: True`) a clog can't be
+   told from a runout, the print always pauses.
 
 14. `MMU ENABLE=0|1`
 
@@ -382,8 +412,9 @@ The extension supplies all the necessary gcode commands.
 15. `MMU_STATUS`
 
    Prints a summary of the MMU state: enabled / homed / paused, the selected
-   and loaded gates, the loaded tool, the filament position, the current action, the pending
-   (failed) operation and the gate map.
+   and loaded gates, the loaded tool, the filament position, the current action,
+   whether endless spool is enabled, the pending (failed) operation and the
+   gate map.
 
 16. `MMU_HELP`
 
@@ -428,7 +459,53 @@ The extension supplies all the necessary gcode commands.
    mapped to it. `MMU_RECOVER TOOL=2 GATE=4` tells the MMU that T2 is loaded
    from gate 4 and remaps T2 to gate 4.
 
-19. `MMU_FORM_TIP` / `MMU_CUT`
+19. `MMU_ENDLESS_SPOOL`
+
+   Shows or edits endless spool, same as in Happy Hare: when a spool runs out
+   during a print, the tool continues with the next gate of the same endless
+   spool group and the print goes on. Gates with the same group number form a
+   group. This is normally done from the tool mapping dialog of the Mainsail /
+   Fluidd MMU panel, but works from the console too:
+
+   ```gcode
+   MMU_ENDLESS_SPOOL                     ; print the settings
+   MMU_ENDLESS_SPOOL ENABLE=1            ; enable (0: disable)
+   MMU_ENDLESS_SPOOL GROUPS=0,0,0,1,1    ; gates 0-2 are group A, 3-4 group B
+   MMU_ENDLESS_SPOOL RESET=1             ; back to the [mmu] config values
+   ```
+
+   `QUIET=1` doesn't print the settings after a change. The defaults come from
+   `[mmu]`, changes are saved with `save_variables` and survive restarts:
+
+   ```ini
+   [mmu]
+   endless_spool_enabled: False
+   endless_spool_groups: 0, 1, 2, 3, 4  # each gate in its own group
+   ```
+
+   It needs `MMU_RUNOUT` in the `runout_gcode` of the filament switch sensor,
+   and optionally of a motion sensor before it, to also detect clogs (see
+   `MMU_GATE_MAP`). A clog never starts endless spool. On a runout at the
+   switch sensor, `MMU_RUNOUT` marks the gate empty and
+   checks the other gates of its group in order (after the gate, wrapping
+   around), skipping the empty ones. The first one found is loaded:
+
+   1. `PAUSE` parks the toolhead with your pause macro,
+   2. `_MMU_ENDLESS_SPOOL_PRE_UNLOAD` runs, if you defined it,
+   3. the loaded tool is remapped to the new gate in the TTG map (see
+      `MMU_TTG_MAP`),
+   4. the new gate is loaded like a `Tn` tool change (the new filament
+      pushes the rest of the old one ahead of it),
+   5. `_MMU_ENDLESS_SPOOL_POST_LOAD` runs, if you defined it, e.g. to wipe
+      the nozzle (see [Callback macros](#callback-macros)),
+   6. `RESUME` continues the print.
+
+   If no gate of the group is left, the print pauses instead. If the tool
+   change fails, the MMU pauses with the recovery dialog like a failed `Tn`,
+   `RESUME_MMU` retries it and resumes the print. `MMU_TTG_MAP` shows each
+   tool's group while endless spool is enabled.
+
+20. `MMU_FORM_TIP` / `MMU_CUT`
 
    Run the tip forming (`_MMU_FORM_TIP`) or the in-extruder cut
    (`_MMU_CUT_TIP`) on its own, to test and tune the
@@ -477,6 +554,7 @@ design.
    MMU_CHECK_GATES
    MMU_CUT
    MMU_EJECT
+   MMU_ENDLESS_SPOOL
    MMU_FORM_TIP
    MMU_GATE_MAP
    MMU_HELP
@@ -527,6 +605,8 @@ effects. Nothing is called for a macro you don't define.
 | `_MMU_PRE_LOAD`       | Before a load starts, before the gate is selected                   |
 | `_MMU_POST_LOAD`      | After the filament is loaded to the nozzle (e.g. to purge or wipe)  |
 | `_MMU_ACTION_CHANGED` | On every change of the MMU action, with `ACTION` and `OLD_ACTION`   |
+| `_MMU_ENDLESS_SPOOL_PRE_UNLOAD` | Before an endless spool tool change, the print is paused  |
+| `_MMU_ENDLESS_SPOOL_POST_LOAD`  | After an endless spool tool change, before the print resumes (e.g. to wipe the nozzle) |
 
 A tool change calls the unload macros and then the load macros. The load /
 unload macros are skipped when there is nothing to load / unload, and the
@@ -534,6 +614,22 @@ moves they make are finished before the MMU continues. An error in one of them
 fails the load / unload like a failing MMU step does, so the print is paused
 and the recovery dialog is shown. An error in `_MMU_ACTION_CHANGED` is only
 reported.
+
+An endless spool tool change (see `MMU_ENDLESS_SPOOL`) is a tool change, so
+it calls the load / unload macros too, and the two endless spool macros
+around them. If an endless spool macro fails, the print stays paused and
+`RESUME` continues it. If the tool change itself fails, `RESUME_MMU` retries
+it and resumes the print without calling `_MMU_ENDLESS_SPOOL_POST_LOAD`, so
+wipe the nozzle yourself before that if needed. For example, to wipe off the
+purged filament:
+
+```ini
+[gcode_macro _MMU_ENDLESS_SPOOL_POST_LOAD]
+gcode:
+    PURGE_PLATFORM_RETRACT  ; your own macros
+    WIPE_NOZZLE
+    PURGE_PLATFORM_EXTEND
+```
 
 `ACTION` and `OLD_ACTION` are Happy Hare's action names (`Idle`, `Loading`,
 `Unloading`, `Loading Ext`, `Unloading Ext`, `Forming Tip`, `Cutting Tip`,
@@ -600,7 +696,8 @@ It also has buttons to select, load, unload, eject, preload a gate, check one
 or all gates for filament, home, unlock and recover the MMU. Clicking a gate's filament opens the gate
 editor, where you can set the filament name, material, color and temperature,
 or pick a Spoolman spool. The tool mapping dialog maps each tool to a gate
-(see `MMU_TTG_MAP`), its endless spool groups aren't supported.
+(see `MMU_TTG_MAP`) and sets the endless spool groups (see
+`MMU_ENDLESS_SPOOL`).
 
 `MMU_CHECK_GATE` checks the selected gate and `MMU_CHECK_GATES` checks all
 gates. Each gate's filament is fed to FINDA and back, and the gate is marked
@@ -618,7 +715,8 @@ spoolman_support: readonly  # off, readonly
 
 Add a `[save_variables]` section to your `printer.cfg` (see
 [Post Installation](#post-installation-both-automatic-and-manual-installation)),
-so the gate map and the tool-to-gate map survive restarts.
+so the gate map, the tool-to-gate map and the endless spool settings survive
+restarts.
 
 ### Spoolman
 
@@ -645,8 +743,8 @@ it from the previous one. The gate to spool mapping is stored in Klipper
 ### Not supported
 
 The following Happy Hare features aren't available, and their buttons only
-print a "not supported" message: endless spool, bypass, gear motor sync, and
-loading or unloading the extruder only.
+print a "not supported" message: bypass, gear motor sync, and loading or
+unloading the extruder only.
 The panel's "T macro color" setting isn't supported either, the MMU3's `Tn`
 commands aren't macros.
 
