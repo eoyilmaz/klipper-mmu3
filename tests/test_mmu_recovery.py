@@ -33,6 +33,8 @@ def make_mmu() -> MMU:
     """Build a bare MMU3 instance without running __init__ or touching Klipper."""
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None
     # no user macros are defined
     mmu.printer = types.SimpleNamespace(lookup_object=lambda name, default=None: None)
@@ -225,6 +227,8 @@ def assess_mmu(
 ) -> MMU:
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None
     mmu.filament_pos = tracked
     mmu.current_gate = 1

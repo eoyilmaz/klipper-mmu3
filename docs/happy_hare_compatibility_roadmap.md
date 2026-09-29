@@ -162,10 +162,24 @@ The largest change. Needed before any feature where tool `n` is not gate `n`.
   the tool like Happy Hare. The panel's `tool`, `last_tool` / `next_tool` and the stats' tool
   change tally are tools; `Operation` carries both the tools and the gates. The removed
   `tool_mapping` option (#62) is not revived, the identity is the default map.
-- [ ] **Endless spool.** ([#64](https://github.com/eoyilmaz/klipper-mmu3/issues/64)) On runout,
-  switch the tool to the next available gate in the same `endless_spool_groups` group and continue
-  printing. Needs reliable runout detection (filament switch sensor, or the motion sensor from Phase
-  1) and the TTG map. Implement `MMU_ENDLESS_SPOOL`.
+- [x] **Endless spool.** ([#64](https://github.com/eoyilmaz/klipper-mmu3/issues/64)) `MMU_RUNOUT`
+  (called from the filament switch sensor's `runout_gcode`) marks the gate empty and, with endless
+  spool enabled and a print in progress, remaps the loaded tool to the next non-empty gate of its
+  `endless_spool_groups` group (Happy Hare's order: the gates after it, wrapping around), then
+  `PAUSE`, a `Tn` style tool change and `RESUME`. With no gate left, endless spool disabled, no
+  filament loaded, the MMU disabled or filament still in FINDA it runs `PAUSE`, so the
+  `runout_gcode` no longer needs its own. A failed tool change pauses the MMU with the recovery
+  dialog. `MMU_ENDLESS_SPOOL` takes `ENABLE=`, `GROUPS=`, `RESET=1` and `QUIET=1` like Happy Hare,
+  the `endless_spool_enabled` / `endless_spool_groups` `[mmu]` options are the defaults and the
+  changes are saved with `save_variables`. `printer.mmu` reports `endless_spool_groups`,
+  `endless_spool_enabled` and `endless_spool`, so the panel's tool mapping dialog edits the groups.
+  Happy Hare's `endless_spool_on_load` and `endless_spool_eject_gate` are not implemented. The
+  runout detection uses the filament switch sensor, the motion sensor (#54) is not needed. A motion
+  sensor before the switch sensor can call `MMU_RUNOUT` too: with filament in FINDA it is a clog and
+  the print pauses, with FINDA empty the print uses up the rest of the filament until the switch
+  sensor sees the runout, and pauses if the extruder uses more than `runout_tail_length` until then.
+  The optional `_MMU_ENDLESS_SPOOL_PRE_UNLOAD` / `_MMU_ENDLESS_SPOOL_POST_LOAD` callback macros run
+  around the tool change while the print is paused (e.g. to wipe the nozzle).
 - [ ] **Slicer tool map (`MMU_SLICER_TOOL_MAP`).**
   ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)) Record the tools, colours and
   materials the print file uses, so the panel can show them and `MMU_PRINT_START` can warn about

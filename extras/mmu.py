@@ -100,6 +100,8 @@ IS_DIGIT = re.compile(r"[0-9\-.]+")
 TOTAL_STATS_VARIABLE = "mmu_total_stats"
 GATE_MAP_VARIABLE = "mmu_gate_map"
 TTG_MAP_VARIABLE = "mmu_ttg_map"
+ENDLESS_SPOOL_ENABLED_VARIABLE = "mmu_endless_spool_enabled"
+ENDLESS_SPOOL_GROUPS_VARIABLE = "mmu_endless_spool_groups"
 # the names before the [mmu3 MMU3] -> [mmu] rename, read when the new
 # variable isn't saved yet
 LEGACY_VARIABLES = {
@@ -118,6 +120,9 @@ PRE_UNLOAD_MACRO = "_MMU_PRE_UNLOAD"
 POST_UNLOAD_MACRO = "_MMU_POST_UNLOAD"
 PRE_LOAD_MACRO = "_MMU_PRE_LOAD"
 POST_LOAD_MACRO = "_MMU_POST_LOAD"
+# around an endless spool tool change, while the print is paused
+ENDLESS_SPOOL_PRE_UNLOAD_MACRO = "_MMU_ENDLESS_SPOOL_PRE_UNLOAD"
+ENDLESS_SPOOL_POST_LOAD_MACRO = "_MMU_ENDLESS_SPOOL_POST_LOAD"
 ACTION_CHANGED_MACRO = "_MMU_ACTION_CHANGED"
 # tip forming (ramming) and the in-extruder cut, Happy Hare's names for them
 FORM_TIP_MACRO = "_MMU_FORM_TIP"
@@ -125,6 +130,9 @@ CUT_TIP_MACRO = "_MMU_CUT_TIP"
 
 logger = logging.getLogger(__name__)
 PRINT_STATS_POLL_INTERVAL = 10.0
+# how often the extruder is checked while waiting for the end of the filament
+# to reach the filament switch sensor
+RUNOUT_TAIL_CHECK_INTERVAL = 0.5
 
 
 class FilamentPos(enum.IntEnum):
@@ -409,6 +417,105 @@ def map_tool_to_gate(tool: int, ttg_map: None | list[int]) -> int:
     if ttg_map is not None and 0 <= tool < len(ttg_map):
         return ttg_map[tool]
     return tool
+
+
+def default_endless_spool_groups(num_gates: int) -> list[int]:
+    """Return the default endless spool groups, each gate in its own group.
+
+    Args:
+        num_gates (int): The number of gates.
+
+    Returns:
+        list[int]: The group of each gate.
+    """
+    return list(range(num_gates))
+
+
+def is_valid_endless_spool_groups(num_gates: int, value: object) -> bool:
+    """Return True if ``value`` is a valid list of endless spool groups.
+
+    Args:
+        num_gates (int): The number of gates.
+        value (object): The groups to check, one non-negative int per gate.
+
+    Returns:
+        bool: True if valid.
+    """
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == num_gates
+        and all(
+            isinstance(group, int) and not isinstance(group, bool) and group >= 0
+            for group in value
+        )
+    )
+
+
+def endless_spool_groups_from_saved(
+    num_gates: int, value: object, default: list[int]
+) -> list[int]:
+    """Return the endless spool groups saved with ``save_variables``.
+
+    A missing, corrupt or stale value (e.g. saved with a different number of
+    gates) falls back to ``default``.
+
+    Args:
+        num_gates (int): The number of gates.
+        value (object): The saved value.
+        default (list[int]): The groups to use if the saved value is invalid.
+
+    Returns:
+        list[int]: The group of each gate.
+    """
+    if is_valid_endless_spool_groups(num_gates, value):
+        return list(value)
+    return list(default)
+
+
+def group_name(group: int) -> str:
+    """Return how an endless spool group is named in messages, like Happy Hare.
+
+    Args:
+        group (int): The group.
+
+    Returns:
+        str: ``A`` for group 0, ``B`` for 1, ... and the number past ``Z``.
+    """
+    if 0 <= group < 26:
+        return chr(ord("A") + group)
+    return str(group)
+
+
+def next_endless_spool_gate(
+    gate: int, groups: list[int], gate_statuses: list[int]
+) -> tuple[None | int, list[int]]:
+    """Return the gate endless spool continues with after ``gate`` runs out.
+
+    Same as Happy Hare: the gates after ``gate`` are checked in order,
+    wrapping around, and the first one in the same group that is not empty
+    (available or unknown) is picked.
+
+    Args:
+        gate (int): The gate that ran out.
+        groups (list[int]): The endless spool group of each gate.
+        gate_statuses (list[int]): The status of each gate.
+
+    Returns:
+        tuple[None | int, list[int]]: The next gate (None if no gate is
+            left) and the gates of the group that were checked.
+    """
+    num_gates = len(groups)
+    if not 0 <= gate < num_gates:
+        return None, []
+    checked = []
+    for offset in range(1, num_gates):
+        candidate = (gate + offset) % num_gates
+        if groups[candidate] != groups[gate]:
+            continue
+        checked.append(candidate)
+        if gate_statuses[candidate] != GATE_EMPTY:
+            return candidate, checked
+    return None, checked
 
 
 def get_tool_and_gate_params(
@@ -1219,6 +1326,38 @@ class MMU:
         self.gate_map = GateMap(self.number_of_tools)
         # the tool-to-gate map, persisted via save_variables
         self.ttg_map = default_ttg_map(self.number_of_tools)
+        # endless spool: on a runout, continue the tool with the next gate of
+        # the same group. The config values are the defaults, MMU_ENDLESS_SPOOL
+        # changes are persisted via save_variables and win over them.
+        self.default_endless_spool_enabled = config.getboolean(
+            "endless_spool_enabled", False
+        )
+        self.default_endless_spool_groups = config.getintlist(
+            "endless_spool_groups",
+            default_endless_spool_groups(self.number_of_tools),
+            count=self.number_of_tools,
+        )
+        if not is_valid_endless_spool_groups(
+            self.number_of_tools, self.default_endless_spool_groups
+        ):
+            raise config.error(
+                "endless_spool_groups needs one non-negative group per gate"
+            )
+        self.endless_spool_enabled = self.default_endless_spool_enabled
+        self.endless_spool_groups = list(self.default_endless_spool_groups)
+        # A runout seen by a sensor before the filament switch sensor (e.g. a
+        # motion sensor) with FINDA empty is handled once the end of the
+        # filament reaches the switch sensor. The extruder may use this much
+        # filament until then, the print pauses otherwise (the end of the
+        # filament is stuck).
+        self.runout_tail_length = config.getfloat(
+            "runout_tail_length", 100.0, above=0.0
+        )
+        # the gate whose runout waits for the switch sensor, and the extruder
+        # position when it was seen
+        self.runout_tail_gate: None | int = None
+        self.runout_tail_start = 0.0
+        self._runout_tail_timer = None
         # the Happy Hare shaped part of get_status(), read by the Mainsail /
         # Fluidd MMU panel
         self.hh_status = MmuStatus(self)
@@ -1409,12 +1548,15 @@ class MMU:
                 self.number_of_tools,
                 self.save_variables.allVariables.get(TTG_MAP_VARIABLE),
             )
+            self.load_endless_spool(self.save_variables.allVariables)
         else:
             self.respond_info(
                 "[save_variables] is not configured - MMU3 lifetime "
-                "statistics, the gate map and the tool-to-gate map will not "
-                "persist across restarts."
+                "statistics, the gate map, the tool-to-gate map and the "
+                "endless spool settings will not persist across restarts."
             )
+
+        self._runout_tail_timer = self.reactor.register_timer(self._check_runout_tail)
 
         self.print_stats = self.printer.lookup_object("print_stats", None)
         if self.print_stats is not None:
@@ -1581,6 +1723,74 @@ class MMU:
                 the loaded gate.
         """
         return self.gate_to_tool(self.loaded_gate)
+
+    def load_endless_spool(self, variables: dict) -> None:
+        """Read the endless spool settings saved with ``save_variables``.
+
+        Invalid or missing values keep the config defaults.
+
+        Args:
+            variables (dict): The saved variables.
+        """
+        enabled = variables.get(ENDLESS_SPOOL_ENABLED_VARIABLE)
+        if enabled in (0, 1):
+            self.endless_spool_enabled = bool(enabled)
+        self.endless_spool_groups = endless_spool_groups_from_saved(
+            self.number_of_tools,
+            variables.get(ENDLESS_SPOOL_GROUPS_VARIABLE),
+            self.default_endless_spool_groups,
+        )
+
+    def save_endless_spool(self) -> None:
+        """Persist the endless spool settings via ``save_variables``."""
+        if self.save_variables is None:
+            return
+        self.gcode.run_script_from_command(
+            f"SAVE_VARIABLE VARIABLE={ENDLESS_SPOOL_ENABLED_VARIABLE} "
+            f"VALUE={int(self.endless_spool_enabled)}"
+        )
+        value = json.dumps(self.endless_spool_groups)
+        self.gcode.run_script_from_command(
+            f"SAVE_VARIABLE VARIABLE={ENDLESS_SPOOL_GROUPS_VARIABLE} VALUE='{value}'"
+        )
+
+    def set_endless_spool(
+        self, enabled: None | bool = None, groups: None | list[int] = None
+    ) -> None:
+        """Change the endless spool settings, saving them if they changed.
+
+        Args:
+            enabled (None | bool): Enable / disable endless spool, None keeps
+                the current state.
+            groups (None | list[int]): The group of each gate, None keeps the
+                current groups.
+        """
+        changed = False
+        if enabled is not None and bool(enabled) != self.endless_spool_enabled:
+            self.endless_spool_enabled = bool(enabled)
+            changed = True
+        if groups is not None and list(groups) != self.endless_spool_groups:
+            # a new list, so Klipper's change detection pushes it to Moonraker
+            self.endless_spool_groups = list(groups)
+            changed = True
+        if changed:
+            self.save_endless_spool()
+
+    def next_endless_spool_gate(self, gate: int) -> tuple[None | int, list[int]]:
+        """Return the gate endless spool continues with after ``gate``.
+
+        See :func:`next_endless_spool_gate`.
+
+        Args:
+            gate (int): The gate that ran out.
+
+        Returns:
+            tuple[None | int, list[int]]: The next gate (None if no gate is
+                left) and the gates of the group that were checked.
+        """
+        return next_endless_spool_gate(
+            gate, self.endless_spool_groups, self.gate_map.statuses()
+        )
 
     def set_gate_status(self, gate: None | int, status: int) -> None:
         """Record an observed gate availability, saving it if it changed.
@@ -1921,9 +2131,14 @@ class MMU:
                 "Same as MMU_TTG_MAP",
             ),
             (
+                "MMU_ENDLESS_SPOOL",
+                self.cmd_mmu_endless_spool,
+                "Show or edit endless spool (ENABLE= / GROUPS= / RESET=1)",
+            ),
+            (
                 "MMU_RUNOUT",
                 self.cmd_mmu_runout,
-                "Mark the loaded gate empty on runout (add to runout_gcode)",
+                "Handle a runout: endless spool or pause (add to runout_gcode)",
             ),
             (
                 "MMU_UNLOCK",
@@ -2004,7 +2219,6 @@ class MMU:
 
         # Happy Hare commands without an MMU3 equivalent
         for name in (
-            "MMU_ENDLESS_SPOOL",
             "MMU_SLICER_TOOL_MAP",
             "MMU_SPOOLMAN",
             "MMU_SYNC_GEAR_MOTOR",
@@ -4630,44 +4844,331 @@ class MMU:
         return True
 
     def cmd_mmu_runout(self, gcmd: GCodeCommand) -> bool:
-        """Mark the loaded gate empty after a filament runout.
+        """Handle a filament runout: continue with endless spool, or pause.
 
         Klipper's ``filament_switch_sensor`` has no runout event to listen to,
         this is meant to be called from its ``runout_gcode``, which Klipper
         only runs while printing and while the sensor is enabled. The MMU
         disables the sensor during its own loads and unloads, and the command
-        ignores the runout if the MMU is moving filament or nothing is loaded.
+        ignores the runout if the MMU is moving filament.
+
+        The loaded gate is marked empty. With endless spool enabled and a
+        print in progress, the loaded tool is remapped to the next gate of its
+        group and loaded, and the print continues. Otherwise the print is
+        paused (``PAUSE``).
 
         A runout with filament still in FINDA means the filament broke or got
         stuck between FINDA and the sensor, the spool is not empty so the gate
-        is not marked empty.
+        is not marked empty and the print is paused.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
 
         Returns:
-            bool: Always True, a runout never pauses the MMU by itself.
+            bool: True if the print continues or was paused, False if the
+                endless spool tool change failed (the MMU is then paused).
         """
-        if not self.is_enabled:
-            self.respond_info("MMU is disabled, runout ignored.")
-            return True
         if self.action != ACTION_IDLE:
             self.respond_info(f"MMU is busy ({self.action}), runout ignored.")
             return True
+        if not self.is_enabled:
+            return self.pause_on_runout("Filament runout, the MMU is disabled.")
         gate = self.loaded_gate
         if gate is None or self.filament_pos != FilamentPos.LOADED:
-            self.respond_info("No filament loaded, runout ignored.")
-            return True
+            return self.pause_on_runout("Filament runout, no filament loaded.")
         if not self.enable_no_selector_mode and self.is_filament_in_finda():
-            self.respond_info(
+            return self.pause_on_runout(
                 f"Filament runout on gate {gate}, but FINDA still detects "
-                "filament. The filament may be broken or stuck in the bowden, "
-                "the gate is not marked empty."
+                "filament. The nozzle may be clogged, or the filament tangled, "
+                "broken or stuck in the bowden, the gate is not marked empty."
             )
-            return True
+        if self.is_in_print and self.is_filament_in_switch_sensor():
+            # a sensor before the switch sensor (e.g. a motion sensor)
+            return self.wait_for_runout_tail(gate)
+        self.clear_runout_tail()
         self.set_gate_status(gate, GATE_EMPTY)
-        self.respond_info(f"Gate {gate} ran out of filament, marked empty.")
+        message = f"Gate {gate} ran out of filament, marked empty."
+        if not self.endless_spool_enabled:
+            return self.pause_on_runout(message)
+        tool = self.loaded_tool
+        if tool is None:
+            return self.pause_on_runout(
+                f"{message} No tool maps to gate {gate}, endless spool can't continue."
+            )
+        if not self.is_in_print:
+            return self.pause_on_runout(
+                f"{message} Not printing, endless spool only continues a print."
+            )
+        next_gate, checked = self.next_endless_spool_gate(gate)
+        group = group_name(self.endless_spool_groups[gate])
+        checked_text = ", ".join(str(g) for g in checked) or "none"
+        if next_gate is None:
+            return self.pause_on_runout(
+                f"{message} Endless spool: no gate left for T{tool} in group "
+                f"{group} (checked gates: {checked_text})."
+            )
+        self.respond_info(
+            f"{message} Endless spool: T{tool} continues with gate {next_gate} "
+            f"(group {group})."
+        )
+        return self.endless_spool_swap(gcmd, tool, next_gate)
+
+    def wait_for_runout_tail(self, gate: int) -> bool:
+        """Keep printing until the end of the filament reaches the switch sensor.
+
+        Called when a sensor before the filament switch sensor (e.g. a motion
+        sensor) sees a runout. With FINDA empty the spool ran out, but the end
+        of the filament is past the MMU pulley and can't be unloaded. The
+        print uses it up, and the switch sensor's ``MMU_RUNOUT`` then continues
+        with endless spool or pauses. If the extruder uses more than
+        ``runout_tail_length`` before that, the end of the filament is stuck
+        and the print pauses (see :meth:`_check_runout_tail`).
+
+        Without FINDA (``enable_no_selector_mode``) a clog can't be told from
+        a runout, so the print pauses instead.
+
+        Args:
+            gate (int): The gate that ran out.
+
+        Returns:
+            bool: Always True.
+        """
+        if self.enable_no_selector_mode:
+            return self.pause_on_runout(
+                f"Filament runout on gate {gate} before the filament switch "
+                "sensor. Without FINDA a clog can't be told from a runout, the "
+                "gate is not marked empty."
+            )
+        self.set_gate_status(gate, GATE_EMPTY)
+        if self.runout_tail_gate == gate:
+            # already waiting, keep the first position
+            return True
+        self.respond_info(
+            f"Gate {gate} ran out of filament, marked empty. Printing on until "
+            "the end of the filament reaches the filament switch sensor."
+        )
+        self.runout_tail_gate = gate
+        self.runout_tail_start = self.extruder_position(self.reactor.monotonic())
+        self.reactor.update_timer(self._runout_tail_timer, self.reactor.NOW)
         return True
+
+    def clear_runout_tail(self) -> None:
+        """Stop waiting for the end of the filament to reach the switch sensor."""
+        self.runout_tail_gate = None
+        if self._runout_tail_timer is not None:
+            self.reactor.update_timer(self._runout_tail_timer, self.reactor.NEVER)
+
+    def extruder_position(self, eventtime: float) -> float:
+        """Return the extruder position, the same way Klipper's motion sensor does.
+
+        Args:
+            eventtime (float): The reactor event time.
+
+        Returns:
+            float: The extruder position in mm.
+        """
+        mcu = self.printer.lookup_object("mcu")
+        return self.extruder.find_past_position(mcu.estimated_print_time(eventtime))
+
+    def _check_runout_tail(self, eventtime: float) -> float:
+        """Pause the print if the end of the filament doesn't arrive in time.
+
+        Stops watching if the print ended or the gate was unloaded / changed
+        in the meantime (e.g. by the switch sensor's ``MMU_RUNOUT``).
+
+        Args:
+            eventtime (float): The reactor event time.
+
+        Returns:
+            float: The next time this timer should fire.
+        """
+        gate = self.runout_tail_gate
+        if (
+            gate is None
+            or not self.is_in_print
+            or self.loaded_gate != gate
+            or self.filament_pos != FilamentPos.LOADED
+        ):
+            self.runout_tail_gate = None
+            return self.reactor.NEVER
+        used = self.extruder_position(eventtime) - self.runout_tail_start
+        if used <= self.runout_tail_length:
+            return eventtime + RUNOUT_TAIL_CHECK_INTERVAL
+        self.runout_tail_gate = None
+        # G-code can't run in a timer, pause from a callback like Klipper's
+        # runout sensors do
+        self.reactor.register_callback(partial(self._pause_stuck_runout_tail, gate))
+        return self.reactor.NEVER
+
+    def _pause_stuck_runout_tail(self, gate: int, eventtime: float) -> None:
+        """Pause the print, the end of the filament didn't reach the switch sensor.
+
+        Args:
+            gate (int): The gate that ran out.
+            eventtime (float): The reactor event time.
+        """
+        self.respond_info(
+            f"Gate {gate} ran out of filament, but the filament switch sensor "
+            f"still detects filament after {self.runout_tail_length:.0f} mm. The "
+            "end of the filament may be stuck in the bowden. Pausing the print."
+        )
+        # pausing from an event must pause the print immediately, see
+        # Klipper's filament_switch_sensor
+        pause_resume = self.printer.lookup_object("pause_resume", None)
+        if pause_resume is not None:
+            pause_resume.send_pause_command()
+        try:
+            self.gcode.run_script("PAUSE")
+        except Exception:
+            logger.exception("mmu: pausing the print failed")
+
+    def pause_on_runout(self, message: str) -> bool:
+        """Report why a runout pauses the print and pause it.
+
+        The print is paused with ``PAUSE`` (the print's pause macro), the MMU
+        itself is not paused: after fixing the filament, ``RESUME`` continues.
+
+        Args:
+            message (str): Why the print can't continue.
+
+        Returns:
+            bool: Always True.
+        """
+        self.respond_info(f"{message} Pausing the print.")
+        self.gcode.run_script_from_command("PAUSE")
+        return True
+
+    def endless_spool_swap(self, gcmd: GCodeCommand, tool: int, gate: int) -> bool:
+        """Continue ``tool`` with ``gate`` after a runout and resume the print.
+
+        The print is paused first, so its ``PAUSE`` / ``RESUME`` macros park
+        and unpark the toolhead around the tool change, then the tool is
+        remapped to ``gate`` and loaded like ``Tn``. If the tool change
+        fails, the MMU pauses and shows the recovery prompt, ``RESUME_MMU``
+        retries it and resumes the print.
+
+        The optional ``_MMU_ENDLESS_SPOOL_PRE_UNLOAD`` macro runs before the
+        tool change and ``_MMU_ENDLESS_SPOOL_POST_LOAD`` after it (e.g. to
+        wipe the nozzle), both while the print is paused. If one fails, the
+        print stays paused and ``RESUME`` continues it.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            tool (int): The tool that ran out.
+            gate (int): The gate to continue with.
+
+        Returns:
+            bool: True if the print resumed, False otherwise.
+        """
+        self.gcode.run_script_from_command("PAUSE")
+        if not self.run_user_macro(ENDLESS_SPOOL_PRE_UNLOAD_MACRO):
+            return False
+        ttg_map = list(self.ttg_map)
+        ttg_map[tool] = gate
+        self.set_ttg_map(ttg_map)
+        self.respond_info(f"Remapped T{tool} to gate {gate}.")
+        if not self.cmd_tx(gcmd, tool_id=tool, gate=gate):
+            return False
+        if not self.run_user_macro(ENDLESS_SPOOL_POST_LOAD_MACRO):
+            return False
+        self.gcode.run_script_from_command("RESUME")
+        return True
+
+    def cmd_mmu_endless_spool(self, gcmd: GCodeCommand) -> bool:
+        """Show or edit endless spool, Happy Hare's ``MMU_ENDLESS_SPOOL``.
+
+        ``ENABLE=0|1`` disables / enables it, ``GROUPS=g,g,...`` sets the group
+        of each gate (in gate order, gates with the same number form a group),
+        ``RESET=1`` goes back to the ``[mmu]`` config values. ``QUIET=1`` does
+        not print the settings, no arguments prints them.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        quiet = gcmd.get_int("QUIET", 0, minval=0, maxval=1)
+        if gcmd.get_int("RESET", 0, minval=0, maxval=1):
+            self.set_endless_spool(
+                enabled=self.default_endless_spool_enabled,
+                groups=self.default_endless_spool_groups,
+            )
+        else:
+            enabled = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
+            groups_param = gcmd.get("GROUPS", None)
+            groups = None
+            if groups_param is not None:
+                groups = self.parse_endless_spool_groups(gcmd, groups_param)
+            if enabled is None and groups is None:
+                quiet = 0
+            self.set_endless_spool(
+                enabled=None if enabled is None else bool(enabled), groups=groups
+            )
+        if not quiet:
+            self.print_endless_spool()
+        return True
+
+    def parse_endless_spool_groups(self, gcmd: GCodeCommand, value: str) -> list[int]:
+        """Return the groups given with ``MMU_ENDLESS_SPOOL GROUPS=``.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+            value (str): The comma separated groups, in gate order.
+
+        Raises:
+            gcmd.error: If a group is not a non-negative number or there is not
+                one group per gate.
+
+        Returns:
+            list[int]: The group of each gate.
+        """
+        parts = [part.strip() for part in value.strip().strip("'\"").split(",")]
+        if len(parts) != self.number_of_tools:
+            raise gcmd.error(
+                f"GROUPS= has {len(parts)} groups, it needs one for each of the "
+                f"{self.number_of_tools} gates."
+            )
+        groups = []
+        for part in parts:
+            try:
+                group = int(part)
+            except ValueError:
+                raise gcmd.error(f"Invalid group in GROUPS=: {part}") from None
+            if group < 0:
+                raise gcmd.error(f"Invalid group in GROUPS=: {group}")
+            groups.append(group)
+        return groups
+
+    def endless_spool_group_gates(self, gate: int) -> list[int]:
+        """Return the gates in the endless spool group of ``gate``.
+
+        Args:
+            gate (int): The gate.
+
+        Returns:
+            list[int]: The gates of the group, starting with ``gate`` and in
+                the order endless spool tries them.
+        """
+        num_gates = self.number_of_tools
+        group = self.endless_spool_groups[gate]
+        return [
+            (gate + offset) % num_gates
+            for offset in range(num_gates)
+            if self.endless_spool_groups[(gate + offset) % num_gates] == group
+        ]
+
+    def print_endless_spool(self) -> None:
+        """Print whether endless spool is enabled and its groups."""
+        state = "enabled" if self.endless_spool_enabled else "disabled"
+        lines = [f"Endless spool is {state}.", "Endless spool groups:"]
+        groups: dict[int, list[int]] = {}
+        for gate, group in enumerate(self.endless_spool_groups):
+            groups.setdefault(group, []).append(gate)
+        for group, gates in groups.items():
+            gates_text = ", ".join(str(g) for g in gates)
+            lines.append(f"Group {group_name(group)}: gates {gates_text}")
+        self.respond_info("\n".join(lines))
 
     def cmd_mmu_gate_map(self, gcmd: GCodeCommand) -> bool:
         """Show or edit the filament metadata of the gates.
@@ -4803,6 +5304,12 @@ class MMU:
                 if info.name:
                     parts.append(info.name)
                 parts.append(f"[{GATE_STATUS_TEXT.get(info.status, info.status)}]")
+                if self.endless_spool_enabled:
+                    group = group_name(self.endless_spool_groups[gate])
+                    gates = " > ".join(
+                        str(g) for g in self.endless_spool_group_gates(gate)
+                    )
+                    parts.append(f"group {group}: {gates}")
             if tool == loaded_tool:
                 parts.append("<- loaded")
             lines.append(" ".join(str(p) for p in parts))
@@ -5051,6 +5558,7 @@ class MMU:
             f"Loaded tool: {text(self.loaded_tool, 'T')}",
             f"Filament position: {self.filament_pos.name}",
             f"Action: {self.action}",
+            f"Endless spool: {'enabled' if self.endless_spool_enabled else 'disabled'}",
         ]
         if self.pending_operation is not None:
             lines.append(f"Pending operation: {self.pending_operation.describe()}")
