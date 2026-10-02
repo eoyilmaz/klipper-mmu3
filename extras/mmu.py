@@ -23,6 +23,7 @@ from extras.mmu_gate_map import (
     GATE_UNKNOWN,
     NO_SPOOL,
     GateMap,
+    normalize_color,
 )
 from extras.mmu_hh_compat import (
     ACTION_CHECKING,
@@ -102,6 +103,8 @@ GATE_MAP_VARIABLE = "mmu_gate_map"
 TTG_MAP_VARIABLE = "mmu_ttg_map"
 ENDLESS_SPOOL_ENABLED_VARIABLE = "mmu_endless_spool_enabled"
 ENDLESS_SPOOL_GROUPS_VARIABLE = "mmu_endless_spool_groups"
+# Happy Hare's material of a slicer tool when MATERIAL= isn't given
+SLICER_MATERIAL_UNKNOWN = "unknown"
 # the names before the [mmu3 MMU3] -> [mmu] rename, read when the new
 # variable isn't saved yet
 LEGACY_VARIABLES = {
@@ -516,6 +519,170 @@ def next_endless_spool_gate(
         if gate_statuses[candidate] != GATE_EMPTY:
             return candidate, checked
     return None, checked
+
+
+def is_known_material(material: str) -> bool:
+    """Return True if a material is set, Happy Hare's ``unknown`` is not.
+
+    Args:
+        material (str): The material.
+
+    Returns:
+        bool: True if the material is set.
+    """
+    return material.strip().lower() not in ("", SLICER_MATERIAL_UNKNOWN)
+
+
+def is_matching_material(slicer_material: str, gate_material: str) -> bool:
+    """Return True if a gate's material is the material the slicer asks for.
+
+    The materials must be the same, ignoring case and surrounding spaces:
+    ``PLA`` doesn't fit ``PLA+`` (similar names can print at very different
+    temperatures, e.g. ``PC`` and ``PCTG``). An unknown material on either
+    side always fits.
+
+    Args:
+        slicer_material (str): The material of the tool in the print.
+        gate_material (str): The material of the gate.
+
+    Returns:
+        bool: True if the materials fit.
+    """
+    if not (is_known_material(slicer_material) and is_known_material(gate_material)):
+        return True
+    return slicer_material.strip().lower() == gate_material.strip().lower()
+
+
+class SlicerToolMap:
+    """The tools the print file uses, as the slicer's start G-code gives them.
+
+    Filled by ``MMU_SLICER_TOOL_MAP`` and reported as Happy Hare's
+    ``slicer_tool_map``, see :meth:`to_dict`.
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        """Forget the tools of the previous print."""
+        self.tools: dict[int, dict] = {}
+        self.referenced_tools: list[int] = []
+        self.initial_tool: None | int = None
+        self.total_toolchanges: None | int = None
+
+    @property
+    def is_empty(self) -> bool:
+        """Return True if no tool or initial tool is set.
+
+        Returns:
+            bool: True if the map is empty.
+        """
+        return not self.tools and self.initial_tool is None
+
+    def set_tool(
+        self,
+        tool: int,
+        color: str = "",
+        material: str = SLICER_MATERIAL_UNKNOWN,
+        temp: int = 0,
+        name: str = "",
+        used: bool = True,
+    ) -> None:
+        """Set the filament of a tool, like Happy Hare.
+
+        Args:
+            tool (int): The tool.
+            color (str): The filament color, see :func:`normalize_color`.
+            material (str): The filament material.
+            temp (int): The print temperature.
+            name (str): The filament name.
+            used (bool): Whether the print uses the tool.
+        """
+        self.tools[tool] = {
+            "color": normalize_color(color),
+            "material": material,
+            "temp": temp,
+            "name": name,
+            "in_use": used,
+        }
+        if used:
+            self.add_referenced_tool(tool)
+
+    def set_initial_tool(self, tool: int) -> None:
+        """Set the tool the print starts with, it is also a used tool.
+
+        Args:
+            tool (int): The tool.
+        """
+        self.initial_tool = tool
+        self.add_referenced_tool(tool)
+
+    def add_referenced_tool(self, tool: int) -> None:
+        """Record that the print uses a tool.
+
+        Args:
+            tool (int): The tool.
+        """
+        self.referenced_tools = sorted({*self.referenced_tools, tool})
+
+    def to_dict(self) -> dict:
+        """Return the map in Happy Hare's ``slicer_tool_map`` shape.
+
+        Built fresh on each call so Klipper's change detection pushes updates
+        to Moonraker. ``purge_volumes`` is always empty and ``skip_automap``
+        always False, the MMU3 doesn't calculate purge volumes or map the
+        tools to gates automatically.
+
+        Returns:
+            dict: ``tools`` (keyed by the tool as a string),
+                ``referenced_tools``, ``initial_tool``, ``purge_volumes``,
+                ``total_toolchanges`` and ``skip_automap``.
+        """
+        return {
+            "tools": {
+                str(tool): dict(info) for tool, info in sorted(self.tools.items())
+            },
+            "referenced_tools": list(self.referenced_tools),
+            "initial_tool": self.initial_tool,
+            "purge_volumes": [],
+            "total_toolchanges": self.total_toolchanges,
+            "skip_automap": False,
+        }
+
+
+def slicer_tool_map_warnings(
+    slicer_tool_map: SlicerToolMap, ttg_map: list[int], gate_map: GateMap
+) -> list[str]:
+    """Return what doesn't match between the print's tools and the gates.
+
+    A tool the print uses is reported if it maps to an empty gate, or to a
+    gate whose material doesn't fit, see :func:`is_matching_material`. Only
+    gates known to be empty are reported as empty.
+
+    Args:
+        slicer_tool_map (SlicerToolMap): The tools the print uses.
+        ttg_map (list[int]): The tool-to-gate map.
+        gate_map (GateMap): The filament of each gate.
+
+    Returns:
+        list[str]: One message per mismatch, empty if everything matches.
+    """
+    warnings = []
+    for tool in slicer_tool_map.referenced_tools:
+        gate = map_tool_to_gate(tool, ttg_map)
+        if not gate_map.is_valid_gate(gate):
+            continue
+        info = gate_map[gate]
+        if info.status == GATE_EMPTY:
+            warnings.append(f"T{tool} loads gate {gate}, which is empty.")
+            continue
+        material = slicer_tool_map.tools.get(tool, {}).get("material", "")
+        if not is_matching_material(material, info.material):
+            warnings.append(
+                f"T{tool} is {material} in the print, but gate {gate} has "
+                f"{info.material}."
+            )
+    return warnings
 
 
 def get_tool_and_gate_params(
@@ -1326,6 +1493,9 @@ class MMU:
         self.gate_map = GateMap(self.number_of_tools)
         # the tool-to-gate map, persisted via save_variables
         self.ttg_map = default_ttg_map(self.number_of_tools)
+        # the tools the print uses, set by MMU_SLICER_TOOL_MAP in the start
+        # G-code and cleared when the print ends
+        self.slicer_tool_map = SlicerToolMap()
         # endless spool: on a runout, continue the tool with the next gate of
         # the same group. The config values are the defaults, MMU_ENDLESS_SPOOL
         # changes are persisted via save_variables and win over them.
@@ -1610,6 +1780,7 @@ class MMU:
         if not self.is_in_print:
             return
         self.print_state = state
+        self.slicer_tool_map.reset()
 
     def follow_print_stats(self, eventtime: float) -> None:
         """Update ``print_state`` when the ``print_stats`` state changes.
@@ -2136,6 +2307,11 @@ class MMU:
                 "Show or edit endless spool (ENABLE= / GROUPS= / RESET=1)",
             ),
             (
+                "MMU_SLICER_TOOL_MAP",
+                self.cmd_mmu_slicer_tool_map,
+                "Show or set the tools the print uses (from the start G-code)",
+            ),
+            (
                 "MMU_RUNOUT",
                 self.cmd_mmu_runout,
                 "Handle a runout: endless spool or pause (add to runout_gcode)",
@@ -2219,7 +2395,6 @@ class MMU:
 
         # Happy Hare commands without an MMU3 equivalent
         for name in (
-            "MMU_SLICER_TOOL_MAP",
             "MMU_SPOOLMAN",
             "MMU_SYNC_GEAR_MOTOR",
             "MMU_MOTORS_ON",
@@ -4157,8 +4332,10 @@ class MMU:
     def cmd_mmu_print_start(self, gcmd: GCodeCommand) -> bool:
         """Start the print job, ``MMU_PRINT_START``.
 
-        Resets the job stats and sets ``print_state`` to ``printing``. Does
-        nothing while a print is in progress.
+        Resets the job stats and sets ``print_state`` to ``printing``, unless
+        a print is already in progress (e.g. ``print_stats`` started it).
+        Then warns about the tools of the slicer tool map that don't match the
+        gates, see :meth:`check_slicer_tool_map`.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
@@ -4167,7 +4344,32 @@ class MMU:
             bool: True if command completed successfully, False otherwise.
         """
         self.on_print_start()
+        self.check_slicer_tool_map()
         return True
+
+    def check_slicer_tool_map(self) -> None:
+        """Warn about the tools of the slicer tool map that don't match.
+
+        A tool the print uses that maps to an empty gate, or to a gate with a
+        different material, see :func:`slicer_tool_map_warnings`. Only warns,
+        the print goes on. Nothing is checked while the MMU is disabled.
+        """
+        if not self.is_enabled:
+            return
+        warnings = slicer_tool_map_warnings(
+            self.slicer_tool_map, self.ttg_map, self.gate_map
+        )
+        if not warnings:
+            return
+        self.respond_info(
+            "\n".join(
+                [
+                    "Warning: the print doesn't match the gates:",
+                    *warnings,
+                    "Check the gates (MMU_GATE_MAP) or remap the tools (MMU_TTG_MAP).",
+                ]
+            )
+        )
 
     def cmd_mmu_print_end(self, gcmd: GCodeCommand) -> bool:
         """End the print job, ``MMU_PRINT_END STATE=complete``.
@@ -5313,6 +5515,95 @@ class MMU:
             if tool == loaded_tool:
                 parts.append("<- loaded")
             lines.append(" ".join(str(p) for p in parts))
+        self.respond_info("\n".join(lines))
+
+    def cmd_mmu_slicer_tool_map(self, gcmd: GCodeCommand) -> bool:
+        """Show or set the tools the print uses, ``MMU_SLICER_TOOL_MAP``.
+
+        Called from the slicer's start G-code, before ``MMU_PRINT_START``:
+        ``RESET=1`` forgets the previous print, ``INITIAL_TOOL=`` and
+        ``TOTAL_TOOLCHANGES=`` set what the print starts with and how many
+        tool changes it has, ``TOOL=`` with ``COLOR=``, ``MATERIAL=``,
+        ``TEMP=``, ``NAME=`` and ``USED=0|1`` sets the filament of a tool.
+        These don't print the map, no arguments (or ``DETAIL=1``, which also
+        lists the unused tools) prints it with the mismatches to the gates.
+        Happy Hare's other parameters (``PURGE_VOLUMES=``, ``AUTOMAP=``, ...)
+        are ignored.
+
+        Args:
+            gcmd (GCodeCommand): The G-code command.
+
+        Returns:
+            bool: True if command completed successfully, False otherwise.
+        """
+        max_tool = self.number_of_tools - 1
+        detail = gcmd.get_int("DETAIL", 0, minval=0, maxval=1)
+        quiet = gcmd.get_int("QUIET", 0, minval=0, maxval=1)
+        tool = gcmd.get_int("TOOL", None, minval=0, maxval=max_tool)
+        initial_tool = gcmd.get_int("INITIAL_TOOL", None, minval=0, maxval=max_tool)
+        total_toolchanges = gcmd.get_int("TOTAL_TOOLCHANGES", None, minval=0)
+
+        changed = False
+        if gcmd.get_int("RESET", 0, minval=0, maxval=1):
+            self.slicer_tool_map.reset()
+            changed = True
+        if tool is not None:
+            self.slicer_tool_map.set_tool(
+                tool,
+                color=gcmd.get("COLOR", ""),
+                material=gcmd.get("MATERIAL", SLICER_MATERIAL_UNKNOWN).strip(),
+                temp=gcmd.get_int("TEMP", 0, minval=0),
+                name=gcmd.get("NAME", "").strip(),
+                used=bool(gcmd.get_int("USED", 1, minval=0, maxval=1)),
+            )
+            changed = True
+        if initial_tool is not None:
+            self.slicer_tool_map.set_initial_tool(initial_tool)
+            changed = True
+        if total_toolchanges is not None:
+            self.slicer_tool_map.total_toolchanges = total_toolchanges
+            changed = True
+
+        if (not changed and not quiet) or detail:
+            self.print_slicer_tool_map(detail=bool(detail))
+        return True
+
+    def print_slicer_tool_map(self, detail: bool = False) -> None:
+        """Print the tools the print uses and the gates they load.
+
+        Args:
+            detail (bool): Also list the tools the print doesn't use.
+        """
+        slicer_tool_map = self.slicer_tool_map
+        if slicer_tool_map.is_empty:
+            self.respond_info("No slicer tool map loaded.")
+            return
+        num_tools = len(slicer_tool_map.referenced_tools)
+        summary = "Single color print" if num_tools <= 1 else f"{num_tools} color print"
+        if slicer_tool_map.total_toolchanges is not None:
+            summary += f", {slicer_tool_map.total_toolchanges} tool changes"
+        lines = ["Slicer tool map:", summary]
+        for tool, info in sorted(slicer_tool_map.tools.items()):
+            if not info["in_use"] and not detail:
+                continue
+            parts = [f"T{tool} -> gate {self.tool_to_gate(tool)}:", info["material"]]
+            if info["name"]:
+                parts.append(info["name"])
+            if info["color"]:
+                parts.append(f"color={info['color']}")
+            if info["temp"]:
+                parts.append(f"{info['temp']}C")
+            if not info["in_use"]:
+                parts.append("(not used)")
+            lines.append(" ".join(str(p) for p in parts))
+        if slicer_tool_map.initial_tool is not None:
+            lines.append(f"Initial tool: T{slicer_tool_map.initial_tool}")
+        warnings = slicer_tool_map_warnings(
+            slicer_tool_map, self.ttg_map, self.gate_map
+        )
+        if warnings:
+            lines.append("Warnings:")
+            lines.extend(warnings)
         self.respond_info("\n".join(lines))
 
     @staticmethod

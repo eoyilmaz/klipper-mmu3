@@ -185,10 +185,15 @@ The slicer G-code follows the Happy Hare style. The
 Slicer) has the full versions, the MMU related parts are:
 
 - [Machine start G-code](./sample_configs/E3NG_v1.2/machine_gcode/machine_start.gcode):
-  call `MMU_PRINT_START` at the beginning, and load the first tool after all
-  the homing, bed leveling etc. is finished and before any filament is used:
+  tell the MMU which tools the print uses (optional, see
+  `MMU_SLICER_TOOL_MAP`), call `MMU_PRINT_START` at the beginning, and load
+  the first tool after all the homing, bed leveling etc. is finished and
+  before any filament is used:
 
   ```gcode
+  MMU_SLICER_TOOL_MAP RESET=1 INITIAL_TOOL=[initial_tool] TOTAL_TOOLCHANGES=[total_toolchanges]
+  {if is_extruder_used[0]}MMU_SLICER_TOOL_MAP TOOL=0 COLOR="{filament_colour[0]}" MATERIAL="{filament_type[0]}" TEMP={nozzle_temperature_initial_layer[0]} NAME="{filament_settings_id[0]}"{endif}
+  ; ... the same line for each gate: TOOL=1 with [1], TOOL=2 with [2], ...
   MMU_PRINT_START
   ; ... homing, bed leveling, heating ...
   T[initial_tool]
@@ -429,6 +434,19 @@ The extension supplies all the necessary gcode commands.
    (`STATE=` also takes `cancelled`, `error`, `ready` and `standby`). Both do
    nothing if the print job has already started / ended.
 
+   `MMU_PRINT_START` also checks the tools the print uses (see
+   `MMU_SLICER_TOOL_MAP`) against the gates, even if the print job has
+   already started, and prints a warning if a tool loads an empty gate or a
+   gate with a different material. The print goes on, fix the gate map or the
+   tool-to-gate map before the tool is needed. When the print job ends, the
+   tools are cleared.
+
+   The materials must be the same (ignoring case), so name them the same in
+   the slicer's filament "Type" and in Spoolman: `PLA` in the slicer doesn't
+   fit a `PLA+` spool (Orca Slicer's "Type" also takes names that aren't in
+   its list). Materials that aren't set aren't checked. Colors and filament
+   names aren't compared.
+
    You don't have to call them. With `print_start_detection: True` (the
    default) the MMU starts and ends the print job when Klipper's
    `[print_stats]` does. If your print start / end G-code calls them, you can
@@ -515,6 +533,48 @@ The extension supplies all the necessary gcode commands.
    afterwards, `MMU_UNLOAD` takes it out. Unlike Happy Hare's
    `MMU_TEST_FORM_TIP` they take no parameters: the MMU3 macros are plain
    G-code without variables to override, edit them in `mmu.cfg` instead.
+
+21. `MMU_SLICER_TOOL_MAP`
+
+   Records the tools the print uses, with their colors and materials, same
+   as in Happy Hare. `MMU_PRINT_START` then warns if a tool loads an empty
+   gate or a gate with a different material, and the MMU panel shows the
+   tool changes done out of the print's total ("Printing (3/12 swaps)").
+   Happy Hare reads the tools from the G-code file with its Moonraker
+   component, the MMU3 takes them from the slicer's start G-code instead, so
+   nothing needs to be installed in Moonraker. Add these lines before
+   `MMU_PRINT_START` (Orca Slicer placeholders, one `TOOL=` line for each gate
+   of your MMU, see the
+   [sample start G-code](./sample_configs/E3NG_v1.2/machine_gcode/machine_start.gcode)
+   for all 12):
+
+   ```gcode
+   MMU_SLICER_TOOL_MAP RESET=1 INITIAL_TOOL=[initial_tool] TOTAL_TOOLCHANGES=[total_toolchanges]
+   {if is_extruder_used[0]}MMU_SLICER_TOOL_MAP TOOL=0 COLOR="{filament_colour[0]}" MATERIAL="{filament_type[0]}" TEMP={nozzle_temperature_initial_layer[0]} NAME="{filament_settings_id[0]}"{endif}
+   {if is_extruder_used[1]}MMU_SLICER_TOOL_MAP TOOL=1 COLOR="{filament_colour[1]}" MATERIAL="{filament_type[1]}" TEMP={nozzle_temperature_initial_layer[1]} NAME="{filament_settings_id[1]}"{endif}
+   ; ... TOOL=2, TOOL=3, ...
+   ```
+
+   Keep the quotes around `COLOR` and `NAME`: Klipper reads an unquoted `#`
+   as the start of a comment, and names can have spaces. The
+   `{if is_extruder_used[n]}` lines only add the tools the print uses, and
+   also work when the project has fewer filaments than the MMU has gates.
+
+   These lines don't print anything. Without arguments the command prints the
+   tools, the gates they load and the warnings, `DETAIL=1` also lists the
+   tools the print doesn't use:
+
+   ```gcode
+   MMU_SLICER_TOOL_MAP           ; print the tools of the print
+   MMU_SLICER_TOOL_MAP DETAIL=1  ; also the unused tools
+   MMU_SLICER_TOOL_MAP RESET=1   ; forget the tools
+   ```
+
+   `TOOL=` also takes `USED=0` for a tool the print doesn't use, `QUIET=1`
+   doesn't print anything. The tools are reported in `printer.mmu.slicer_tool_map`
+   (Happy Hare's format). Happy Hare's `PURGE_VOLUMES=`, `AUTOMAP=` and
+   `SKIP_AUTOMAP=` are ignored, the MMU3 doesn't calculate purge volumes or
+   map tools to gates automatically.
 
 > [!NOTE]
 >
@@ -690,7 +750,9 @@ The panel shows:
 - where the filament is (at FINDA, at the extruder, loaded) and what the MMU is
   doing right now (Selecting, Loading, Unloading, Homing, Cutting Filament,
   ...),
-- the reason when the MMU paused itself.
+- the reason when the MMU paused itself,
+- while printing, the tool changes done out of the print's total, if the start
+  G-code calls `MMU_SLICER_TOOL_MAP`.
 
 It also has buttons to select, load, unload, eject, preload a gate, check one
 or all gates for filament, home, unlock and recover the MMU. Clicking a gate's filament opens the gate

@@ -17,6 +17,7 @@ sys.modules.setdefault(
 
 # Local Imports
 from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
     MMU,
     TTG_MAP_VARIABLE,
     FilamentPos,
@@ -90,6 +91,7 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
     mmu.ttg_map = default_ttg_map(num_tools)
+    mmu.slicer_tool_map = SlicerToolMap()
     mmu.endless_spool_enabled = False
     mmu.endless_spool_groups = list(range(num_tools))
     mmu.selected_tool = None

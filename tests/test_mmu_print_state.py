@@ -19,7 +19,14 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu import MMU, Operation, OperationKind, OperationStats  # noqa: E402
+from extras.mmu import (  # noqa: E402
+    MMU,
+    Operation,
+    OperationKind,
+    OperationStats,
+    SlicerToolMap,
+)
+from extras.mmu_gate_map import GateMap  # noqa: E402
 from extras.mmu_hh_compat import MmuStatus  # noqa: E402
 
 
@@ -58,7 +65,13 @@ def make_mmu(print_start_detection: bool = True) -> MMU:
     mmu.print_state = "ready"
     mmu.print_start_detection = print_start_detection
     mmu.is_paused = False
+    mmu.is_enabled = True
     mmu.job_stats = OperationStats()
+    mmu.ttg_map = list(range(5))
+    mmu.gate_map = GateMap(5)
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.messages = []
+    mmu.respond_info = mmu.messages.append
     return mmu
 
 

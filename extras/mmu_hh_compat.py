@@ -317,6 +317,7 @@ class MmuStatus:
                 else ""
             ),
             "ttg_map": list(mmu.ttg_map),
+            "slicer_tool_map": mmu.slicer_tool_map.to_dict(),
             "endless_spool_groups": list(mmu.endless_spool_groups),
             # Happy Hare's deprecated name of endless_spool_enabled
             "endless_spool": int(mmu.endless_spool_enabled),

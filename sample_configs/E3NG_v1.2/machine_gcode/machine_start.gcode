@@ -1,5 +1,21 @@
 CLEAR_PAUSE ; To prevent "Already Paused" errors...
-MMU_PRINT_START ; start the MMU print job, resets the job statistics
+; the tools the print uses, one line per MMU gate (the COLOR and NAME quotes
+; are needed), MMU_PRINT_START warns if a tool loads an empty gate or a gate
+; with a different material
+MMU_SLICER_TOOL_MAP RESET=1 INITIAL_TOOL=[initial_tool] TOTAL_TOOLCHANGES=[total_toolchanges]
+{if is_extruder_used[0]}MMU_SLICER_TOOL_MAP TOOL=0 COLOR="{filament_colour[0]}" MATERIAL="{filament_type[0]}" TEMP={nozzle_temperature_initial_layer[0]} NAME="{filament_settings_id[0]}"{endif}
+{if is_extruder_used[1]}MMU_SLICER_TOOL_MAP TOOL=1 COLOR="{filament_colour[1]}" MATERIAL="{filament_type[1]}" TEMP={nozzle_temperature_initial_layer[1]} NAME="{filament_settings_id[1]}"{endif}
+{if is_extruder_used[2]}MMU_SLICER_TOOL_MAP TOOL=2 COLOR="{filament_colour[2]}" MATERIAL="{filament_type[2]}" TEMP={nozzle_temperature_initial_layer[2]} NAME="{filament_settings_id[2]}"{endif}
+{if is_extruder_used[3]}MMU_SLICER_TOOL_MAP TOOL=3 COLOR="{filament_colour[3]}" MATERIAL="{filament_type[3]}" TEMP={nozzle_temperature_initial_layer[3]} NAME="{filament_settings_id[3]}"{endif}
+{if is_extruder_used[4]}MMU_SLICER_TOOL_MAP TOOL=4 COLOR="{filament_colour[4]}" MATERIAL="{filament_type[4]}" TEMP={nozzle_temperature_initial_layer[4]} NAME="{filament_settings_id[4]}"{endif}
+{if is_extruder_used[5]}MMU_SLICER_TOOL_MAP TOOL=5 COLOR="{filament_colour[5]}" MATERIAL="{filament_type[5]}" TEMP={nozzle_temperature_initial_layer[5]} NAME="{filament_settings_id[5]}"{endif}
+{if is_extruder_used[6]}MMU_SLICER_TOOL_MAP TOOL=6 COLOR="{filament_colour[6]}" MATERIAL="{filament_type[6]}" TEMP={nozzle_temperature_initial_layer[6]} NAME="{filament_settings_id[6]}"{endif}
+{if is_extruder_used[7]}MMU_SLICER_TOOL_MAP TOOL=7 COLOR="{filament_colour[7]}" MATERIAL="{filament_type[7]}" TEMP={nozzle_temperature_initial_layer[7]} NAME="{filament_settings_id[7]}"{endif}
+{if is_extruder_used[8]}MMU_SLICER_TOOL_MAP TOOL=8 COLOR="{filament_colour[8]}" MATERIAL="{filament_type[8]}" TEMP={nozzle_temperature_initial_layer[8]} NAME="{filament_settings_id[8]}"{endif}
+{if is_extruder_used[9]}MMU_SLICER_TOOL_MAP TOOL=9 COLOR="{filament_colour[9]}" MATERIAL="{filament_type[9]}" TEMP={nozzle_temperature_initial_layer[9]} NAME="{filament_settings_id[9]}"{endif}
+{if is_extruder_used[10]}MMU_SLICER_TOOL_MAP TOOL=10 COLOR="{filament_colour[10]}" MATERIAL="{filament_type[10]}" TEMP={nozzle_temperature_initial_layer[10]} NAME="{filament_settings_id[10]}"{endif}
+{if is_extruder_used[11]}MMU_SLICER_TOOL_MAP TOOL=11 COLOR="{filament_colour[11]}" MATERIAL="{filament_type[11]}" TEMP={nozzle_temperature_initial_layer[11]} NAME="{filament_settings_id[11]}"{endif}
+MMU_PRINT_START ; start the MMU print job, resets the job statistics, checks the tools
 SET_PIN PIN=main_led VALUE=1.00
 ; SET_FILAMENT_SENSOR SENSOR=my_filament_sensor ENABLE=0
 ; SET_FILAMENT_SENSOR SENSOR=encoder_sensor ENABLE=0

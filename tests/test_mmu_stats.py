@@ -21,6 +21,7 @@ sys.modules.setdefault(
 
 # Local Imports
 from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
     GATE_MAP_VARIABLE,
     MMU,
     TOTAL_STATS_VARIABLE,
@@ -35,6 +36,7 @@ def make_mmu() -> MMU:
     """Build a bare MMU3 instance, enough for track_operation to run."""
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
     mmu.endless_spool_enabled = False
     mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None
@@ -217,6 +219,7 @@ def make_saved_mmu(variables: dict) -> MMU:
     """Build a bare MMU3 instance with the given saved variables."""
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
     mmu.endless_spool_enabled = False
     mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None
