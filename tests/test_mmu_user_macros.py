@@ -21,6 +21,7 @@ sys.modules.setdefault(
 
 # Local Imports
 from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
     ACTION_CHANGED_MACRO,
     MMU,
     POST_LOAD_MACRO,
@@ -68,6 +69,7 @@ def make_mmu(macros=(), failing=()) -> MMU:
     """
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
     mmu.endless_spool_enabled = False
     mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None

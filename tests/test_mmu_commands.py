@@ -16,6 +16,7 @@ sys.modules.setdefault(
 
 # Local Imports
 from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
     MMU,
     FilamentPos,
     Operation,
@@ -77,6 +78,7 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
     mmu.ttg_map = list(range(num_tools))
+    mmu.slicer_tool_map = SlicerToolMap()
     mmu.endless_spool_enabled = False
     mmu.endless_spool_groups = list(range(num_tools))
     mmu.selected_tool = None
@@ -170,7 +172,7 @@ def test_register_commands_gives_the_commands_a_description() -> None:
     for name in ("MMU", "MMU_HELP", "MMU_STATUS", "MMU_HOME", "M702"):
         assert mmu.gcode.help[name]
     # unsupported commands stay out of Klipper's HELP
-    for name in ("MMU_SLICER_TOOL_MAP", "MMU_TEST_CONFIG"):
+    for name in ("MMU_SPOOLMAN", "MMU_TEST_CONFIG"):
         assert name in mmu.gcode.handlers
         assert name not in mmu.gcode.help
 

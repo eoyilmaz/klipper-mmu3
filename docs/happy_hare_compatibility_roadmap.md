@@ -115,7 +115,7 @@ Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macro
   ([#58](https://github.com/eoyilmaz/klipper-mmu3/issues/58)) Reset job stats and switch
   `print_state` explicitly instead of only following `print_stats`. `print_start_detection` (default
   on) keeps following `print_stats` for start / end G-code that doesn't call them, and is reported.
-  Still open: check that the gates used by the print are available, which needs the slicer tool map
+  `MMU_PRINT_START` checks the tools the print uses against the gates with the slicer tool map
   ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)).
 - [x] **User callback macros.** ([#59](https://github.com/eoyilmaz/klipper-mmu3/issues/59)) Call
   optional user macros at fixed points, like Happy Hare's `_MMU_PRE_UNLOAD`, `_MMU_POST_UNLOAD`,
@@ -180,12 +180,22 @@ The largest change. Needed before any feature where tool `n` is not gate `n`.
   sensor sees the runout, and pauses if the extruder uses more than `runout_tail_length` until then.
   The optional `_MMU_ENDLESS_SPOOL_PRE_UNLOAD` / `_MMU_ENDLESS_SPOOL_POST_LOAD` callback macros run
   around the tool change while the print is paused (e.g. to wipe the nozzle).
-- [ ] **Slicer tool map (`MMU_SLICER_TOOL_MAP`).**
-  ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)) Record the tools, colours and
-  materials the print file uses, so the panel can show them and `MMU_PRINT_START` can warn about
-  mismatches with the gate map. Happy Hare fills this from a Moonraker component that scans the
-  G-code file; decide whether to reuse that component or pass the data from the slicer's start
-  G-code.
+- [x] **Slicer tool map (`MMU_SLICER_TOOL_MAP`).**
+  ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)) Records the tools, colours and
+  materials the print uses. Happy Hare fills this from its Moonraker component that scans the
+  G-code file, the MMU3 takes it from the slicer's start G-code instead (Orca Slicer placeholders,
+  one `{if is_extruder_used[n]}MMU_SLICER_TOOL_MAP TOOL=n COLOR=... MATERIAL=...{endif}` line per
+  gate before `MMU_PRINT_START`), so nothing is installed in Moonraker. `MMU_SLICER_TOOL_MAP`
+  takes Happy Hare's `RESET=1`, `INITIAL_TOOL=`, `TOTAL_TOOLCHANGES=`, `TOOL=` with `COLOR=`,
+  `MATERIAL=`, `TEMP=`, `NAME=`, `USED=`, and `DETAIL=1` / `QUIET=1`; without arguments it prints
+  the tools. `printer.mmu.slicer_tool_map` is reported in Happy Hare's shape, Mainsail shows
+  `total_toolchanges` as "Printing (3/12 swaps)". `MMU_PRINT_START` warns (without pausing) when a
+  used tool maps to an empty gate or a gate with a different material (case-insensitive equality,
+  `PLA` doesn't fit a Spoolman `PLA+` spool); the map is cleared when the
+  print job ends. Not implemented: `PURGE_VOLUMES=` (always `[]`), `AUTOMAP=` / `SKIP_AUTOMAP=`.
+  Mainsail's start print dialog reads `referenced_tools` from the file metadata that only Happy
+  Hare's Moonraker component adds, it doesn't show the tools for the MMU3; the tool mapping
+  dialog's "tools in this file" uses Moonraker's own `filament_weights` and works.
 
 ## Phase 4 — Spoolman Push / Pull
 

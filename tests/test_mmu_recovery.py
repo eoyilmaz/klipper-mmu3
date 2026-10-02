@@ -21,6 +21,7 @@ sys.modules.setdefault(
 
 # Local Imports
 from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
     MMU,
     FilamentPos,
     FilamentSwitchSensorPosition,
@@ -33,6 +34,7 @@ def make_mmu() -> MMU:
     """Build a bare MMU3 instance without running __init__ or touching Klipper."""
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
     mmu.endless_spool_enabled = False
     mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None
@@ -227,6 +229,7 @@ def assess_mmu(
 ) -> MMU:
     mmu = object.__new__(MMU)
     mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
     mmu.endless_spool_enabled = False
     mmu.endless_spool_groups = list(range(5))
     mmu.selected_tool = None
