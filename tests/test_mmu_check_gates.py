@@ -122,6 +122,7 @@ def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
     mmu.pulley_stepper = FakeStepper()
     mmu.pause = pause
     mmu.disable_steppers = lambda: True
+    mmu.enable_steppers = lambda: None
     mmu.show_recovery_prompt = lambda: None
     mmu.respond_info = mmu.messages.append
     mmu.respond_debug = lambda msg: None
@@ -223,6 +224,42 @@ def test_check_gate_reselects_the_previous_gate() -> None:
     assert mmu.cmd_mmu_check_gate(FakeGCmd(GATE=4)) is True
     assert mmu.calls[-1] == ("select", 1)
     assert mmu.current_gate == 1
+
+
+def test_check_gate_holds_the_idler_on_the_selected_gate() -> None:
+    # the steppers were disabled after the previous command, the idler is
+    # already on the gate so its move doesn't re-enable it
+    mmu = make_mmu()
+    mmu.current_gate = 2
+    mmu.enable_steppers = lambda: mmu.calls.append(("steppers_on",))
+    mmu.disable_steppers = lambda: mmu.calls.append(("steppers_off",))
+    assert mmu.cmd_mmu_check_gate(FakeGCmd()) is True
+    assert mmu.calls == [
+        ("steppers_on",),
+        ("select", 2),
+        ("load", 2),
+        ("unload", 2),
+        ("steppers_off",),
+    ]
+
+
+def test_enable_steppers_enables_the_idler_and_selector() -> None:
+    class FakeStepper:
+        def __init__(self) -> None:
+            self.enabled = None
+
+        def do_enable(self, enable):
+            self.enabled = enable
+
+    mmu = object.__new__(MMU)
+    mmu.pulley_stepper = FakeStepper()
+    mmu.idler_stepper = FakeStepper()
+    mmu.selector_stepper = FakeStepper()
+    mmu.enable_steppers()
+    assert mmu.idler_stepper.enabled is True
+    assert mmu.selector_stepper.enabled is True
+    # the pulley is enabled by its first move
+    assert mmu.pulley_stepper.enabled is None
 
 
 def test_check_gate_without_selection_is_refused() -> None:

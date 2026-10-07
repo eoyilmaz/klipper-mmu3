@@ -952,10 +952,12 @@ def reports_action(action: str) -> Callable:
 
 
 def auto_disable_steppers(f: Callable) -> Callable:
-    """Decorator to automatically disable steppers after command execution.
+    """Decorator to enable the steppers for a command and disable them after.
 
-    If any of the decorated commands are executed, the MMU3 instance will
-    automatically disable the steppers after the command.
+    Klipper only enables a disabled stepper when it moves, so a selected gate
+    (an idler / selector move of zero distance) would leave the idler free to
+    be dragged out of its position by the pulley. The idler and selector are
+    enabled before the command and all the steppers disabled after it.
 
     Args:
         f (Callable): The function to wrap.
@@ -967,6 +969,7 @@ def auto_disable_steppers(f: Callable) -> Callable:
     @wraps(f)
     def wrapped_f(self: MMU, gcmd: GCodeCommand, *args, **kwargs) -> None:
         try:
+            self.enable_steppers()
             result = f(self, gcmd, *args, **kwargs)
         finally:
             self.disable_steppers()
@@ -2501,6 +2504,14 @@ class MMU:
             self.pulley_stepper_endstop.query_endstop(print_time)
         )
         return self.finda_triggered
+
+    def enable_steppers(self) -> None:
+        """Enable the idler and selector so they hold their positions.
+
+        The pulley is left alone, it is enabled by its first move.
+        """
+        for stepper in (self.idler_stepper, self.selector_stepper):
+            stepper.do_enable(True)
 
     def disable_steppers(
         self, steppers: None | ManualStepper | list[ManualStepper] = None

@@ -99,6 +99,7 @@ def make_mmu(num_tools: int = 5) -> MMU:
         return True
 
     mmu.disable_steppers = disable_steppers
+    mmu.enable_steppers = lambda: None
     mmu.respond_info = mmu.messages.append
     mmu.display_status_msg = mmu.messages.append
     return mmu

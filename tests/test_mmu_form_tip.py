@@ -75,6 +75,7 @@ def make_mmu(cutter: bool = False, hot: bool = True) -> MMU:
     mmu.is_filament_in_finda = lambda: mmu.in_finda
     mmu.is_filament_in_switch_sensor = lambda: mmu.in_switch
     mmu.disable_steppers = lambda: mmu.calls.append(("steppers_off",))
+    mmu.enable_steppers = lambda: None
 
     def run_script_from_command(script):
         mmu.calls.append(("macro", script.split()[0], mmu.action))

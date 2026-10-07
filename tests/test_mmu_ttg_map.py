@@ -364,6 +364,7 @@ def make_tool_change_mmu() -> MMU:
     mmu.toolhead = None
     mmu.assess_filament_pos = lambda: None
     mmu.disable_steppers = lambda: True
+    mmu.enable_steppers = lambda: None
     mmu.home_idler = lambda: True
     mmu.home_mmu = lambda: True
 
