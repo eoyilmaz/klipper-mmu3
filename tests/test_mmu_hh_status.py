@@ -89,6 +89,7 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu._print_stats_state = "standby"
     mmu.print_state = "ready"
     mmu.print_start_detection = True
+    mmu.is_handling_runout = False
     mmu.current_gate = None
     mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
@@ -225,6 +226,7 @@ def test_print_state_mapping(state, expected, in_print) -> None:
 def test_print_start_detection_is_reported(enabled) -> None:
     mmu = make_mmu()
     mmu.print_start_detection = enabled
+    mmu.is_handling_runout = False
     assert MmuStatus(mmu).get_status(0.0)["print_start_detection"] == int(enabled)
 
 
@@ -564,6 +566,16 @@ def test_printer_mmu_has_the_happy_hare_fields() -> None:
     hh_status = MmuStatus(mmu).get_status(0.0)
     for key, value in hh_status.items():
         assert status[key] == value, key
+
+
+def test_status_reports_the_tip_forming_fields() -> None:
+    # read by Happy Hare's _MMU_FORM_TIP
+    mmu = make_mmu()
+    status = MmuStatus(mmu).get_status(0.0)
+    assert status["runout"] is False
+    assert status["extruder_filament_remaining"] == 0.0
+    mmu.is_handling_runout = True
+    assert MmuStatus(mmu).get_status(0.0)["runout"] is True
 
 
 def test_printer_mmu_has_the_extra_fields() -> None:

@@ -120,6 +120,7 @@ def make_mmu(num_tools: int = 5, finda: bool = False, switch: bool = False) -> M
     mmu.action = ACTION_IDLE
     mmu.print_state = PRINT_STATE_PRINTING
     mmu.enable_no_selector_mode = False
+    mmu.is_handling_runout = False
     mmu.messages = []
     mmu.respond_info = mmu.messages.append
     mmu.is_filament_in_finda = lambda: finda
@@ -340,6 +341,24 @@ def test_endless_spool_does_not_resume_when_the_tool_change_fails() -> None:
     assert mmu.cmd_mmu_runout(FakeGCmd()) is False
     assert events == ["PAUSE", ("T", 2, 4)]
     assert mmu.ttg_map == [0, 1, 4, 3, 4]
+
+
+@pytest.mark.parametrize("tx_result", [True, False])
+def test_endless_spool_reports_runout_during_the_tool_change(tx_result) -> None:
+    # Happy Hare's printer.mmu.runout, read by the tip forming macro
+    mmu = make_mmu()
+    with_endless_spool(mmu, [0, 1, 0, 1, 0], tx_result=tx_result)
+    seen = []
+    cmd_tx = mmu.cmd_tx
+
+    def recording_cmd_tx(gcmd, tool_id=0, gate=None):
+        seen.append(mmu.is_handling_runout)
+        return cmd_tx(gcmd, tool_id=tool_id, gate=gate)
+
+    mmu.cmd_tx = recording_cmd_tx
+    mmu.cmd_mmu_runout(FakeGCmd())
+    assert seen == [True]
+    assert mmu.is_handling_runout is False
 
 
 PRE_UNLOAD = "_MMU_ENDLESS_SPOOL_PRE_UNLOAD"

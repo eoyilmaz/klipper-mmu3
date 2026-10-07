@@ -281,7 +281,39 @@ The extension supplies all the necessary gcode commands.
    the `Tx` commands (and `MMU_CUT`) if the `enable_filament_cutter` is set to
    `True`. `_MMU_FORM_TIP` rams the filament to form its tip, it is called by
    `MMU_FORM_TIP` and, without a cutter, when the filament is ejected before
-   homing (tool changes leave ramming to the slicer).
+   homing. It is Happy Hare's tip forming macro, its settings are the
+   variables of `_MMU_FORM_TIP_VARS` (ramming volume, cooling tube position
+   and length, cooling moves, skinnydip, ...), tune them with
+   `MMU_TEST_FORM_TIP`.
+
+   Tool changes leave ramming to the slicer by default. To use
+   `_MMU_FORM_TIP` instead (Happy Hare's `force_form_tip_standalone`), set
+   in the `[mmu]` section:
+
+   ```ini
+   enable_filament_cutter: False
+   force_form_tip_standalone: True
+   ```
+
+   Every unload (tool changes, `MMU_UNLOAD`, `MMU_EJECT`) then forms the tip
+   of a loaded filament first. Turn off the slicer's ramming (in OrcaSlicer
+   `Enable filament ramming`, which also skips its cooling moves), otherwise
+   the filament is rammed twice. While printing the macro rams
+   `variable_ramming_volume` (0 by default, only the cooling moves),
+   otherwise `variable_ramming_volume_standalone`, set `ramming_volume` to
+   the value you tuned with `MMU_TEST_FORM_TIP`.
+
+   Or choose it per print in the slicer, without changing the config: call
+   `MMU_FORM_TIP` in the change filament G-code right before the tool change
+   (and before `MMU_UNLOAD` in the end G-code). The unload then neither cuts
+   nor rams the formed tip again. Skip it on the slicer's first tool change
+   (`previous_extruder` is -1 there, the start G-code already loaded the tool),
+   otherwise that filament is unloaded and loaded again:
+
+   ```gcode
+   {if previous_extruder >= 0}MMU_FORM_TIP{endif}
+   T[next_extruder]
+   ```
 
    They were called `CUT_FILAMENT_IN_EXTRUDER` and `RAMMING_SLICER` before,
    rename them if your `mmu.cfg` still has the old names (Klipper stops with
@@ -523,16 +555,46 @@ The extension supplies all the necessary gcode commands.
    `RESUME_MMU` retries it and resumes the print. `MMU_TTG_MAP` shows each
    tool's group while endless spool is enabled.
 
-20. `MMU_FORM_TIP` / `MMU_CUT`
+20. `MMU_FORM_TIP` / `MMU_TEST_FORM_TIP` / `MMU_CUT`
 
    Run the tip forming (`_MMU_FORM_TIP`) or the in-extruder cut
    (`_MMU_CUT_TIP`) on its own, to test and tune the
    macros without a tool change. The filament must be loaded and the extruder
    hot enough (`min_temp_extruder`), `MMU_CUT` also needs
    `enable_filament_cutter: True`. The filament is left in the extruder
-   afterwards, `MMU_UNLOAD` takes it out. Unlike Happy Hare's
-   `MMU_TEST_FORM_TIP` they take no parameters: the MMU3 macros are plain
-   G-code without variables to override, edit them in `mmu.cfg` instead.
+   afterwards, `MMU_UNLOAD` takes it out to the MMU without ramming it again,
+   so you can look at the tip.
+
+   To tune the tip without the MMU, like in Happy Hare, push a filament into
+   the extruder by hand (FINDA must not see it) down to the nozzle, heat up
+   and run `MMU_TEST_FORM_TIP`. The MMU doesn't need to be homed and doesn't
+   move, the tip is formed and the filament is ejected from the extruder gears
+   (`FINAL_EJECT=1`) so you can pull it out:
+
+   ```gcode
+   M109 S215                                ; heat up
+   ; push the filament into the extruder until it comes out of the nozzle
+   MMU_TEST_FORM_TIP COOLING_MOVES=3        ; form the tip and eject it
+   ; pull the filament out, look at the tip, snip it off and repeat
+   ```
+
+   `MMU_TEST_FORM_TIP` (and `MMU_FORM_TIP`, its alias like in Happy Hare)
+   changes the `_MMU_FORM_TIP_VARS` before forming the tip, so you can tune
+   it without editing `mmu.cfg` and restarting Klipper:
+
+   ```gcode
+   MMU_TEST_FORM_TIP SHOW=1                 ; list the variables
+   MMU_TEST_FORM_TIP COOLING_MOVES=3        ; change one and form the tip
+   MMU_TEST_FORM_TIP USE_SKINNYDIP=True SKINNYDIP_DISTANCE=25 RUN=0  ; only set them
+   MMU_TEST_FORM_TIP RESET=1                ; back to the mmu.cfg values
+   ```
+
+   Any parameter other than `SHOW`, `RESET` and `RUN` is a variable name,
+   with or without the `variable_` prefix, an unknown name changes nothing.
+   The changes last until Klipper restarts. `MMU_TEST_FORM_TIP` lists the
+   variables each time in the `mmu.cfg` format, copy the values that work
+   to `_MMU_FORM_TIP_VARS`. Happy Hare's `EXTRUDER_ONLY` is not needed: the
+   MMU3 never moves the pulley during tip forming.
 
 21. `MMU_SLICER_TOOL_MAP`
 
@@ -629,6 +691,7 @@ design.
    MMU_STATS
    MMU_STATS_RESET_JOB
    MMU_STATUS
+   MMU_TEST_FORM_TIP
    MMU_TTG_MAP
    MMU_REMAP_TTG
    MMU_UNLOAD

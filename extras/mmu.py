@@ -3,6 +3,7 @@
 # Standard Library Imports
 from __future__ import annotations
 
+import ast
 import configparser
 import contextlib
 import enum
@@ -130,6 +131,10 @@ ACTION_CHANGED_MACRO = "_MMU_ACTION_CHANGED"
 # tip forming (ramming) and the in-extruder cut, Happy Hare's names for them
 FORM_TIP_MACRO = "_MMU_FORM_TIP"
 CUT_TIP_MACRO = "_MMU_CUT_TIP"
+# the settings of _MMU_FORM_TIP, changed at runtime by MMU_TEST_FORM_TIP
+FORM_TIP_VARS_MACRO = "_MMU_FORM_TIP_VARS"
+# the MMU_TEST_FORM_TIP parameters that are not tip forming variables
+TEST_FORM_TIP_PARAMS = ("RESET", "SHOW", "RUN")
 
 logger = logging.getLogger(__name__)
 PRINT_STATS_POLL_INTERVAL = 10.0
@@ -420,6 +425,26 @@ def map_tool_to_gate(tool: int, ttg_map: None | list[int]) -> int:
     if ttg_map is not None and 0 <= tool < len(ttg_map):
         return ttg_map[tool]
     return tool
+
+
+def parse_macro_variable(value: str) -> object:
+    """Parse a ``gcode_macro`` variable value given on the command line.
+
+    Same as Klipper's ``SET_GCODE_VARIABLE`` and ``variable_*`` config
+    options (a Python literal), but a value that isn't one is kept as a
+    string, so ``TOOLCHANGE_FAN_NAME="fan_generic fan0"`` needs no extra
+    quotes.
+
+    Args:
+        value (str): The value as given.
+
+    Returns:
+        object: The parsed value.
+    """
+    try:
+        return ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return value
 
 
 def default_endless_spool_groups(num_gates: int) -> list[int]:
@@ -1531,6 +1556,14 @@ class MMU:
         self.runout_tail_gate: None | int = None
         self.runout_tail_start = 0.0
         self._runout_tail_timer = None
+        # True during an endless spool tool change, Happy Hare's ``runout``
+        self.is_handling_runout = False
+        # the _MMU_FORM_TIP_VARS values before the first MMU_TEST_FORM_TIP
+        # override, restored by MMU_TEST_FORM_TIP RESET=1
+        self.form_tip_defaults: None | dict = None
+        # the tip of the loaded filament was formed / cut, the unload doesn't
+        # do it again (MMU_FORM_TIP / MMU_CUT before a tool change)
+        self.tip_formed = False
         # the Happy Hare shaped part of get_status(), read by the Mainsail /
         # Fluidd MMU panel
         self.hh_status = MmuStatus(self)
@@ -1593,6 +1626,10 @@ class MMU:
         self.cut_stepper_current = config.getfloat("cut_stepper_current", 1.0)
         # cut in extruder
         self.enable_filament_cutter = config.getboolean("enable_filament_cutter", False)
+        # tip forming on unload, Happy Hare's name for it
+        self.force_form_tip_standalone = config.getboolean(
+            "force_form_tip_standalone", False
+        )
         self.extra_load_length = config.getfloat("extra_load_length", 0)
         self.extra_load_speed = config.getfloat("extra_load_speed", 10)
         self.travel_speed = config.getfloat("travel_speed", 100)
@@ -2341,6 +2378,11 @@ class MMU:
                 "MMU_FORM_TIP",
                 self.cmd_mmu_form_tip,
                 "Form the tip of the loaded filament (ramming)",
+            ),
+            (
+                "MMU_TEST_FORM_TIP",
+                self.cmd_mmu_form_tip,
+                "Tune and run the tip forming (SHOW=1, RESET=1, RUN=0, VAR=value)",
             ),
             (
                 "MMU_CUT",
@@ -3302,6 +3344,7 @@ class MMU:
             return False
 
         self.filament_pos = FilamentPos.LOADED
+        self.tip_formed = False
         self.respond_debug("Load Complete")
         return True
 
@@ -3392,10 +3435,16 @@ class MMU:
         self.respond_debug("Filament removed")
         return True
 
-    def form_tip(self) -> None:
-        """Form the filament tip by ramming, reporting ``Forming Tip``."""
+    def form_tip(self, final_eject: bool = False) -> None:
+        """Form the filament tip by ramming, reporting ``Forming Tip``.
+
+        Args:
+            final_eject (bool): Also pull the filament out of the extruder
+                gears (the macro's ``FINAL_EJECT=1``).
+        """
+        script = FORM_TIP_MACRO + (" FINAL_EJECT=1" if final_eject else "")
         with self.running_action(ACTION_FORMING_TIP):
-            self.gcode.run_script_from_command(FORM_TIP_MACRO)
+            self.gcode.run_script_from_command(script)
             self.toolhead.wait_moves()
 
     def cut_tip(self) -> None:
@@ -3410,6 +3459,11 @@ class MMU:
         Runs the same step as an unload (:meth:`form_tip` / :meth:`cut_tip`
         with the idler parked), so it can be tested and tuned on its own. The
         filament is left in the extruder, no longer ``LOADED``.
+
+        A filament pushed into the extruder by hand (seen by the filament
+        switch sensor but not by FINDA) gets its tip formed too, without
+        moving the MMU, and is ejected from the extruder gears so it can be
+        pulled out, like Happy Hare's ``MMU_TEST_FORM_TIP``.
 
         Args:
             cut (bool): Cut the filament instead of ramming it.
@@ -3429,12 +3483,23 @@ class MMU:
                 "MMU_CUT needs `enable_filament_cutter: True` in [mmu]."
             )
             return False
-        if self.assess_filament_pos() != FilamentPos.LOADED:
+        # a filament pushed into the extruder by hand bypasses the MMU
+        by_hand = (
+            not cut
+            and not self.is_filament_in_finda()
+            and self.is_filament_in_switch_sensor()
+        )
+        if not by_hand and self.assess_filament_pos() != FilamentPos.LOADED:
             self.display_status_msg(f"No filament loaded, cannot run {name}!")
             return False
         if not self.validate_extruder_is_hot_enough():
             return False
-        if self.current_gate is not None and not self.unselect_gate():
+        if by_hand:
+            self.respond_info(
+                "No filament in the MMU, forming the tip of the filament in the "
+                "extruder and ejecting it."
+            )
+        elif self.current_gate is not None and not self.unselect_gate():
             return False
 
         with (
@@ -3456,7 +3521,9 @@ class MMU:
             if cut:
                 self.cut_tip()
             else:
-                self.form_tip()
+                self.form_tip(final_eject=by_hand)
+        # the MMU's filament, an unload doesn't cut / ram it again
+        self.tip_formed = not by_hand
 
         # the filament is still in the extruder but retracted from the nozzle,
         # the sensors may show it is even further back
@@ -4215,14 +4282,31 @@ class MMU:
         if run_hooks and not self.run_user_macro(PRE_UNLOAD_MACRO):
             return False
 
-        if self.enable_filament_cutter and self.is_filament_in_switch_sensor():
-            self.respond_debug(f"Cut gate {self.loaded_gate}")
-            self.cut_tip()
+        if self.tip_formed:
+            self.respond_debug(f"The tip of gate {self.loaded_gate} is already formed")
+        elif self.is_filament_in_switch_sensor():
+            if self.enable_filament_cutter:
+                self.respond_debug(f"Cut gate {self.loaded_gate}")
+                self.cut_tip()
+                self.tip_formed = True
+            elif (
+                self.force_form_tip_standalone
+                and self.filament_pos == FilamentPos.LOADED
+            ):
+                # instead of the slicer's ramming, only from the nozzle
+                self.respond_debug(f"Form the tip of gate {self.loaded_gate}")
+                if self.current_gate is not None and not self.unselect_gate():
+                    return False
+                self.form_tip()
+                # a retry of the unload doesn't ram it again
+                self.filament_pos = FilamentPos.IN_HOTEND
+                self.tip_formed = True
 
         self.respond_debug(f"MMU_UNLOAD {self.loaded_gate}")
         # planner runs only the steps still needed to reach UNLOADED
         if not self.move_filament_to(FilamentPos.UNLOADED, self.loaded_gate):
             return False
+        self.tip_formed = False
         return not run_hooks or self.run_user_macro(POST_UNLOAD_MACRO)
 
     def eject_from_extruder(self) -> bool:
@@ -4725,15 +4809,77 @@ class MMU:
 
     @auto_disable_steppers
     def cmd_mmu_form_tip(self, gcmd: GCodeCommand) -> bool:
-        """Form the tip of the loaded filament, ``MMU_FORM_TIP``.
+        """Tune and form the tip, ``MMU_FORM_TIP`` / ``MMU_TEST_FORM_TIP``.
+
+        Same as Happy Hare, where ``MMU_FORM_TIP`` is an alias of
+        ``MMU_TEST_FORM_TIP``. Any other parameter sets the
+        ``_MMU_FORM_TIP_VARS`` variable of that name (with or without the
+        ``variable_`` prefix) until Klipper restarts, the values before the
+        first change are kept for ``RESET=1``. ``SHOW=1`` lists the variables
+        without forming a tip, ``RUN=0`` only sets them. The tip is formed
+        like :meth:`form_tip_standalone`.
 
         Args:
             gcmd (GCodeCommand): The G-code command.
 
         Returns:
-            bool: True if the tip was formed, False otherwise.
+            bool: True if the tip was formed (or the variables were shown /
+                set), False otherwise.
         """
+        reset = gcmd.get_int("RESET", 0, minval=0, maxval=1)
+        show = gcmd.get_int("SHOW", 0, minval=0, maxval=1)
+        run = gcmd.get_int("RUN", 1, minval=0, maxval=1)
+        # without _MMU_FORM_TIP_VARS the variables are the macro's own
+        vars_macro = self.printer.lookup_object(
+            f"gcode_macro {FORM_TIP_VARS_MACRO}", None
+        ) or self.printer.lookup_object(f"gcode_macro {FORM_TIP_MACRO}", None)
+        overrides = {}
+        for name, value in gcmd.get_command_parameters().items():
+            if name.upper() in TEST_FORM_TIP_PARAMS:
+                continue
+            name = name.lower().removeprefix("variable_")
+            if vars_macro is None or name not in vars_macro.variables:
+                raise gcmd.error(
+                    f"Unknown tip forming variable '{name}', "
+                    "MMU_TEST_FORM_TIP SHOW=1 lists them."
+                )
+            overrides[name] = parse_macro_variable(value)
+
+        if reset:
+            if self.form_tip_defaults is not None:
+                vars_macro.variables = dict(self.form_tip_defaults)
+                self.form_tip_defaults = None
+                self.respond_info("Tip forming variables reset to the config values.")
+            show = 1
+        elif overrides:
+            if self.form_tip_defaults is None:
+                self.form_tip_defaults = dict(vars_macro.variables)
+            vars_macro.variables = {**vars_macro.variables, **overrides}
+
+        if show or overrides or gcmd.get_command() == "MMU_TEST_FORM_TIP":
+            self.print_form_tip_vars(vars_macro)
+        if show or not run:
+            return True
         return self.form_tip_standalone()
+
+    def print_form_tip_vars(self, vars_macro: object | None) -> None:
+        """Print the tip forming variables, as lines to copy into ``mmu.cfg``.
+
+        Args:
+            vars_macro (object | None): The ``gcode_macro`` holding them.
+        """
+        variables = {} if vars_macro is None else vars_macro.variables
+        if not variables:
+            self.respond_info(f"{FORM_TIP_MACRO} has no variables to tune.")
+            return
+        changed = ""
+        if self.form_tip_defaults is not None:
+            changed = " (changed, RESET=1 restores)"
+        lines = [f"Tip forming variables{changed}:"]
+        lines += [
+            f"variable_{name}: {value!r}" for name, value in sorted(variables.items())
+        ]
+        self.respond_info("\n".join(lines))
 
     @auto_disable_steppers
     def cmd_mmu_cut(self, gcmd: GCodeCommand) -> bool:
@@ -5041,6 +5187,7 @@ class MMU:
                 if self.loaded_gate is None:
                     raise gcmd.error("LOADED=1 needs a GATE=")
                 self.filament_pos = FilamentPos.LOADED
+                self.tip_formed = False
             elif loaded == 0:
                 self.filament_pos = FilamentPos.UNLOADED
                 self.loaded_gate = None
@@ -5274,16 +5421,20 @@ class MMU:
             bool: True if the print resumed, False otherwise.
         """
         self.gcode.run_script_from_command("PAUSE")
-        if not self.run_user_macro(ENDLESS_SPOOL_PRE_UNLOAD_MACRO):
-            return False
-        ttg_map = list(self.ttg_map)
-        ttg_map[tool] = gate
-        self.set_ttg_map(ttg_map)
-        self.respond_info(f"Remapped T{tool} to gate {gate}.")
-        if not self.cmd_tx(gcmd, tool_id=tool, gate=gate):
-            return False
-        if not self.run_user_macro(ENDLESS_SPOOL_POST_LOAD_MACRO):
-            return False
+        self.is_handling_runout = True
+        try:
+            if not self.run_user_macro(ENDLESS_SPOOL_PRE_UNLOAD_MACRO):
+                return False
+            ttg_map = list(self.ttg_map)
+            ttg_map[tool] = gate
+            self.set_ttg_map(ttg_map)
+            self.respond_info(f"Remapped T{tool} to gate {gate}.")
+            if not self.cmd_tx(gcmd, tool_id=tool, gate=gate):
+                return False
+            if not self.run_user_macro(ENDLESS_SPOOL_POST_LOAD_MACRO):
+                return False
+        finally:
+            self.is_handling_runout = False
         self.gcode.run_script_from_command("RESUME")
         return True
 

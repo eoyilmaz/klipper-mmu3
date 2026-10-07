@@ -336,6 +336,11 @@ class MmuStatus:
             "clog_detection": 0,
             "clog_detection_enabled": 0,
             "print_start_detection": int(mmu.print_start_detection),
+            # read by the tip forming macro: whether the tool change is an
+            # endless spool swap, and the filament left in the extruder after
+            # a cut (not tracked, the next load pushes it out)
+            "runout": mmu.is_handling_runout,
+            "extruder_filament_remaining": 0.0,
             "sensors": self.sensors(),
         }
 

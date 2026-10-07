@@ -125,12 +125,23 @@ Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macro
 - [x] **`MMU_FORM_TIP` and `MMU_CUT`.** ([#60](https://github.com/eoyilmaz/klipper-mmu3/issues/60))
   Standalone commands for tip forming (ramming) and the in-extruder cut, so they can be tested and
   tuned outside a tool change. They run the same step as an eject / unload, need loaded filament and
-  a hot extruder, and leave `filament_pos` at `IN_HOTEND` (or lower if the sensors say so). Happy
-  Hare's `MMU_TEST_FORM_TIP` parameters (`SHOW`, `RESET`, `RUN`, variable overrides) don't apply:
-  the MMU3 macros have no variables. Breaking change: the `RAMMING_SLICER` and
-  `CUT_FILAMENT_IN_EXTRUDER` macros are renamed to Happy Hare's `_MMU_FORM_TIP` and `_MMU_CUT_TIP`,
-  Klipper stops with the rename steps if a needed one is missing (`_MMU_CUT_TIP` only with the
-  cutter enabled).
+  a hot extruder, and leave `filament_pos` at `IN_HOTEND` (or lower if the sensors say so). Breaking
+  change: the `RAMMING_SLICER` and `CUT_FILAMENT_IN_EXTRUDER` macros are renamed to Happy Hare's
+  `_MMU_FORM_TIP` and `_MMU_CUT_TIP`, Klipper stops with the rename steps if a needed one is missing
+  (`_MMU_CUT_TIP` only with the cutter enabled).
+- [x] **`MMU_TEST_FORM_TIP` with a parameterized `_MMU_FORM_TIP`.**
+  ([#89](https://github.com/eoyilmaz/klipper-mmu3/issues/89)) Tune tip forming without editing the
+  macro and restarting Klipper. `_MMU_FORM_TIP` was a fixed list of moves copied from OrcaSlicer's
+  wipe tower G-code (without its X moves, so the speeds were off), it is now Happy Hare's macro with
+  its settings in `_MMU_FORM_TIP_VARS`, tuned for PLA (Happy Hare's defaults in the comments).
+  `MMU_TEST_FORM_TIP` (and its alias `MMU_FORM_TIP`) changes those variables at runtime and forms
+  the tip, with Happy Hare's `SHOW`, `RESET` and `RUN`. `printer.mmu` reports `runout` and
+  `extruder_filament_remaining` for the macro. `EXTRUDER_ONLY` doesn't apply, the MMU3 doesn't move
+  the pulley during tip forming. A filament pushed into the extruder by hand (filament switch sensor
+  without FINDA) is tested without homing or moving the MMU and ejected afterwards
+  (`FINAL_EJECT=1`), as in Happy Hare. `force_form_tip_standalone: True` in `[mmu]` forms the tip
+  with `_MMU_FORM_TIP` on every unload (tool changes too) instead of leaving the ramming to the
+  slicer, as Happy Hare's option.
 - [x] **Sample slicer G-code in Happy Hare style.**
   ([#61](https://github.com/eoyilmaz/klipper-mmu3/issues/61)) Update `sample_configs/` so start /
   end G-code uses `MMU_PRINT_START`, `MMU_PRINT_END` and `MMU_MOTORS_OFF`, and the README shows the
