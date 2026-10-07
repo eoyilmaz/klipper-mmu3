@@ -2424,8 +2424,8 @@ class MMU:
                 self.cmd_endstops_status,
                 "Print the state of the MMU endstops",
             ),
-            ("GET_MMU_PARAM", self.cmd_get_mmu_param, "Print an MMU parameter"),
-            ("SET_MMU_PARAM", self.cmd_set_mmu_param, "Set an MMU parameter"),
+            ("MMU_GET_PARAM", self.cmd_mmu_get_param, "Print an MMU parameter"),
+            ("MMU_SET_PARAM", self.cmd_mmu_set_param, "Set an MMU parameter"),
             ("M702", self.cmd_m702, "Unload the filament"),
         ]
 
@@ -6021,7 +6021,7 @@ class MMU:
         self.print_gate_map()
         return True
 
-    def cmd_get_mmu_param(self, gcmd: GCodeCommand) -> bool:
+    def cmd_mmu_get_param(self, gcmd: GCodeCommand) -> bool:
         """Get any of the MMU parameters/attributes.
 
         Args:
@@ -6039,7 +6039,7 @@ class MMU:
         self.display_status_msg(f"{param}: doesn't exist!")
         return False
 
-    def cmd_set_mmu_param(self, gcmd: GCodeCommand) -> bool:
+    def cmd_mmu_set_param(self, gcmd: GCodeCommand) -> bool:
         """Set any of the MMU parameters/attributes.
 
         Args:
@@ -6054,6 +6054,12 @@ class MMU:
         if param.startswith("_"):
             # protect private parameters
             return True
+
+        # a misspelled name would silently add a new attribute, and a method
+        # would be replaced by the value
+        if not hasattr(self, param) or callable(getattr(self, param)):
+            self.display_status_msg(f"{param}: doesn't exist!")
+            return False
 
         if "," in value:
             temp_value = []

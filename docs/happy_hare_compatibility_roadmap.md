@@ -160,7 +160,7 @@ The largest change. Needed before any feature where tool `n` is not gate `n`.
   `MMU_CHANGE_TOOL` and `Operation.from_tool` / `to_tool` (the stats' tool change tally) stay tools.
   `printer.mmu` reports `current_gate` / `loaded_gate` and still the old `current_tool` /
   `current_filament`. Config options keep their names (`number_of_tools`, ...), so
-  `SET_MMU_PARAM` still finds them; `PARAM=current_tool` / `current_filament` is now
+  `MMU_SET_PARAM` still finds them; `PARAM=current_tool` / `current_filament` is now
   `current_gate` / `loaded_gate`. The gate side LCD menu
   IDs are renamed (`__select_gate __gate0`, `__unselect_gate`, `__unload`, `__eject`, ...) and the
   "Unload Tool" button / menu entry is "Unload" (all documented in the README).

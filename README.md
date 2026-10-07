@@ -654,6 +654,9 @@ The extension supplies all the necessary gcode commands.
 > | `UNSELECT_TOOL` | `MMU_UNSELECT` |
 > | `MMU_ENABLE`    | `MMU ENABLE=1` |
 > | `MMU_DISABLE`   | `MMU ENABLE=0` |
+>
+> `GET_MMU_PARAM` and `SET_MMU_PARAM` are now `MMU_GET_PARAM` and
+> `MMU_SET_PARAM` (no deprecation period, update your macros).
 
 The following is the list of all the commands available, most of them are
 internally used and will be removed in the future as they are not supplying any
@@ -662,7 +665,6 @@ design.
 
    ```gcode
    ENDSTOPS_STATUS
-   GET_MMU_PARAM
    HOME_IDLER
    K0  ; Not supported with MMU3-12x
    K1  ; Not supported with MMU3-12x
@@ -679,6 +681,7 @@ design.
    MMU_ENDLESS_SPOOL
    MMU_FORM_TIP
    MMU_GATE_MAP
+   MMU_GET_PARAM
    MMU_HELP
    MMU_HOME
    MMU_LOAD
@@ -688,6 +691,7 @@ design.
    MMU_RETRY
    MMU_RUNOUT
    MMU_SELECT
+   MMU_SET_PARAM
    MMU_STATS
    MMU_STATS_RESET_JOB
    MMU_STATUS
@@ -700,7 +704,6 @@ design.
    PAUSE_MMU
    PULLEY_CALIBRATE
    RESUME_MMU
-   SET_MMU_PARAM
    T0
    T1
    T2
@@ -784,7 +787,7 @@ the new ones in new macros. Happy Hare's `printer.mmu.gate`,
 `printer.mmu.tool` (the tool mapped to the loaded gate) and
 `printer.mmu.ttg_map` are reported too.
 
-`GET_MMU_PARAM` / `SET_MMU_PARAM` use the new names as well:
+`MMU_GET_PARAM` / `MMU_SET_PARAM` use the new names as well:
 `PARAM=current_gate` / `PARAM=loaded_gate` instead of `PARAM=current_tool` /
 `PARAM=current_filament`. The config options (`number_of_tools`, ...) keep
 their names.
