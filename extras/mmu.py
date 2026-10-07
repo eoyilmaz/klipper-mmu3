@@ -1628,7 +1628,7 @@ class MMU:
         self.enable_filament_cutter = config.getboolean("enable_filament_cutter", False)
         # tip forming on unload, Happy Hare's name for it
         self.force_form_tip_standalone = config.getboolean(
-            "force_form_tip_standalone", False
+            "force_form_tip_standalone", True
         )
         self.extra_load_length = config.getfloat("extra_load_length", 0)
         self.extra_load_speed = config.getfloat("extra_load_speed", 10)

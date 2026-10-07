@@ -286,22 +286,28 @@ The extension supplies all the necessary gcode commands.
    and length, cooling moves, skinnydip, ...), tune them with
    `MMU_TEST_FORM_TIP`.
 
-   Tool changes leave ramming to the slicer by default. To use
-   `_MMU_FORM_TIP` instead (Happy Hare's `force_form_tip_standalone`), set
-   in the `[mmu]` section:
+   Without a cutter every unload (tool changes, `MMU_UNLOAD`, `MMU_EJECT`)
+   forms the tip of a loaded filament with `_MMU_FORM_TIP` (Happy Hare's
+   `force_form_tip_standalone`, `True` by default), so switching from cutting
+   to tip forming only needs:
 
    ```ini
    enable_filament_cutter: False
-   force_form_tip_standalone: True
    ```
 
-   Every unload (tool changes, `MMU_UNLOAD`, `MMU_EJECT`) then forms the tip
-   of a loaded filament first. Turn off the slicer's ramming (in OrcaSlicer
-   `Enable filament ramming`, which also skips its cooling moves), otherwise
-   the filament is rammed twice. While printing the macro rams
-   `variable_ramming_volume` (0 by default, only the cooling moves),
-   otherwise `variable_ramming_volume_standalone`, set `ramming_volume` to
-   the value you tuned with `MMU_TEST_FORM_TIP`.
+   Turn off the slicer's ramming (in OrcaSlicer `Enable filament ramming`,
+   which also skips its cooling moves), otherwise the filament is rammed
+   twice. To leave the ramming of the tool changes to the slicer instead, set
+   `force_form_tip_standalone: False`. While printing the macro rams
+   `variable_ramming_volume`, otherwise `variable_ramming_volume_standalone`,
+   set `ramming_volume` to the value you tuned with `MMU_TEST_FORM_TIP`.
+
+   Both can also be switched until Klipper restarts, e.g. from the start
+   G-code:
+
+   ```gcode
+   MMU_SET_PARAM PARAM=enable_filament_cutter VALUE=False
+   ```
 
    Or choose it per print in the slicer, without changing the config: call
    `MMU_FORM_TIP` in the change filament G-code right before the tool change
