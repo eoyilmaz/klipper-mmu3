@@ -1,4 +1,5 @@
 CLEAR_PAUSE ; To prevent "Already Paused" errors...
+SET_GCODE_OFFSET Z=0 ; Clear any z-adjustments
 ; the tools the print uses, one line per MMU gate (the COLOR and NAME quotes
 ; are needed), MMU_PRINT_START warns if a tool loads an empty gate or a gate
 ; with a different material

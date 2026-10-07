@@ -364,6 +364,7 @@ def test_status_reports_endless_spool() -> None:
     mmu.print_state = "ready"
     mmu.spoolman_support = "off"
     mmu.print_start_detection = True
+    mmu.is_handling_runout = False
     mmu.finda_triggered = False
     mmu.endless_spool_enabled = True
     mmu.endless_spool_groups = [0, 0, 1, 1, 0]

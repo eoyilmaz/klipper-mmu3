@@ -64,6 +64,7 @@ def make_mmu(print_start_detection: bool = True) -> MMU:
     mmu._print_stats_state = "standby"
     mmu.print_state = "ready"
     mmu.print_start_detection = print_start_detection
+    mmu.is_handling_runout = False
     mmu.is_paused = False
     mmu.is_enabled = True
     mmu.job_stats = OperationStats()

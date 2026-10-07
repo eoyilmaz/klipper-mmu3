@@ -97,6 +97,7 @@ def make_mmu(num_tools: int = 5) -> MMU:
     mmu.sync_active_spool = lambda: None
     mmu.save_total_stats = lambda: None
     mmu.disable_steppers = lambda: True
+    mmu.enable_steppers = lambda: None
     mmu.show_recovery_prompt = lambda: None
     mmu.pause = lambda: True
     mmu.respond_info = mmu.messages.append

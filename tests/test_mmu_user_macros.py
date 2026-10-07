@@ -82,6 +82,8 @@ def make_mmu(macros=(), failing=()) -> MMU:
     mmu.current_operation = None
     mmu.enable_no_selector_mode = False
     mmu.enable_filament_cutter = False
+    mmu.force_form_tip_standalone = False
+    mmu.tip_formed = False
     mmu.action = ACTION_IDLE
     mmu.calls = []
     mmu.display_status_msg = lambda msg: mmu.calls.append(("msg", msg))
@@ -218,6 +220,94 @@ def test_pre_unload_runs_before_the_filament_cut() -> None:
         "_MMU_CUT_TIP",
         POST_UNLOAD_MACRO,
     ]
+
+
+def make_mmu_forming_tips(**kwargs) -> MMU:
+    """A loaded MMU3 with ``force_form_tip_standalone: True``."""
+    mmu = make_loaded_mmu(**kwargs)
+    mmu.force_form_tip_standalone = True
+    mmu.is_filament_in_switch_sensor = lambda: True
+
+    def unselect_gate() -> bool:
+        mmu.calls.append(("unselect", mmu.current_gate))
+        mmu.current_gate = None
+        return True
+
+    mmu.unselect_gate = unselect_gate
+    return mmu
+
+
+def test_force_form_tip_standalone_forms_the_tip_before_the_unload() -> None:
+    mmu = make_mmu_forming_tips(macros=HOOKS)
+    mmu.current_gate = 1
+    assert mmu.unload_gate() is True
+    assert mmu.calls == [
+        ("macro", PRE_UNLOAD_MACRO),
+        ("unselect", 1),
+        ("macro", "_MMU_FORM_TIP"),
+        ("from_hotend", FilamentPos.AT_EXTRUDER),
+        ("extruder_to_finda", FilamentPos.AT_FINDA),
+        ("from_finda", FilamentPos.UNLOADED),
+        ("macro", POST_UNLOAD_MACRO),
+    ]
+
+
+def test_force_form_tip_standalone_does_not_ram_a_formed_tip_again() -> None:
+    # e.g. after MMU_TEST_FORM_TIP, or a retry of a failed unload
+    mmu = make_mmu_forming_tips()
+    mmu.filament_pos = FilamentPos.IN_HOTEND
+    assert mmu.unload_gate() is True
+    assert macro_calls(mmu) == []
+
+
+def test_force_form_tip_standalone_retry_does_not_ram_again() -> None:
+    mmu = make_mmu_forming_tips()
+    mmu.unload_filament_from_hotend = lambda: False
+    assert mmu.unload_gate() is False
+    assert mmu.filament_pos == FilamentPos.IN_HOTEND
+    assert mmu.unload_gate() is False
+    assert macro_calls(mmu) == ["_MMU_FORM_TIP"]
+
+
+def test_force_form_tip_standalone_cuts_with_a_cutter() -> None:
+    mmu = make_mmu_forming_tips()
+    mmu.enable_filament_cutter = True
+    assert mmu.unload_gate() is True
+    assert macro_calls(mmu) == ["_MMU_CUT_TIP"]
+
+
+def test_a_tip_formed_before_the_tool_change_is_not_cut() -> None:
+    # MMU_FORM_TIP in the slicer's change filament G-code, then Tn
+    mmu = make_mmu_forming_tips()
+    mmu.enable_filament_cutter = True
+    mmu.tip_formed = True
+    assert mmu.unload_gate() is True
+    assert macro_calls(mmu) == []
+    assert mmu.tip_formed is False
+
+
+def test_a_tip_formed_before_the_tool_change_is_not_rammed_again() -> None:
+    mmu = make_mmu_forming_tips()
+    mmu.tip_formed = True
+    assert mmu.unload_gate() is True
+    assert macro_calls(mmu) == []
+
+
+def test_a_retry_of_the_unload_does_not_cut_again() -> None:
+    mmu = make_mmu_forming_tips()
+    mmu.enable_filament_cutter = True
+    mmu.unload_filament_from_hotend = lambda: False
+    assert mmu.unload_gate() is False
+    assert mmu.tip_formed is True
+    assert mmu.unload_gate() is False
+    assert macro_calls(mmu) == ["_MMU_CUT_TIP"]
+
+
+def test_without_force_form_tip_standalone_the_slicer_rams() -> None:
+    mmu = make_mmu_forming_tips()
+    mmu.force_form_tip_standalone = False
+    assert mmu.unload_gate() is True
+    assert macro_calls(mmu) == []
 
 
 def test_unload_without_macros_only_moves() -> None:

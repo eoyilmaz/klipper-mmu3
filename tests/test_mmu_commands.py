@@ -99,6 +99,7 @@ def make_mmu(num_tools: int = 5) -> MMU:
         return True
 
     mmu.disable_steppers = disable_steppers
+    mmu.enable_steppers = lambda: None
     mmu.respond_info = mmu.messages.append
     mmu.display_status_msg = mmu.messages.append
     return mmu
@@ -155,12 +156,51 @@ def test_mmu_rejects_invalid_enable(value) -> None:
         "UNSELECT_TOOL",
         "MMU_ENABLE",
         "MMU_DISABLE",
+        "GET_MMU_PARAM",
+        "SET_MMU_PARAM",
     ],
 )
 def test_old_command_names_are_removed(old_name) -> None:
     mmu = make_mmu()
     mmu.register_commands()
     assert old_name not in mmu.gcode.handlers
+
+
+def test_mmu_set_param_switches_from_cutting_to_tip_forming() -> None:
+    mmu = make_mmu()
+    mmu.register_commands()
+    mmu.enable_filament_cutter = True
+    mmu.force_form_tip_standalone = False
+    set_param = mmu.gcode.handlers["MMU_SET_PARAM"]
+    set_param(FakeGCmd(PARAM="enable_filament_cutter", VALUE="False"))
+    set_param(FakeGCmd(PARAM="force_form_tip_standalone", VALUE="True"))
+    assert mmu.enable_filament_cutter is False
+    assert mmu.force_form_tip_standalone is True
+    assert mmu.messages == [
+        "enable_filament_cutter: False",
+        "force_form_tip_standalone: True",
+    ]
+
+
+@pytest.mark.parametrize("param", ["enable_filament_cuter", "disable_steppers"])
+def test_mmu_set_param_rejects_unknown_params(param) -> None:
+    # a typo or a method name
+    mmu = make_mmu()
+    mmu.register_commands()
+    before = dict(vars(mmu))
+    handler = mmu.gcode.handlers["MMU_SET_PARAM"]
+    assert handler(FakeGCmd(PARAM=param, VALUE="False")) is False
+    assert vars(mmu) == {**before, "messages": [f"{param}: doesn't exist!"]}
+
+
+def test_mmu_get_param_prints_the_value() -> None:
+    mmu = make_mmu()
+    mmu.register_commands()
+    mmu.force_form_tip_standalone = True
+    assert mmu.gcode.handlers["MMU_GET_PARAM"](
+        FakeGCmd(PARAM="force_form_tip_standalone")
+    )
+    assert mmu.messages == ["force_form_tip_standalone: True"]
 
 
 # ---------------------------------------------------------------------------

@@ -281,7 +281,45 @@ The extension supplies all the necessary gcode commands.
    the `Tx` commands (and `MMU_CUT`) if the `enable_filament_cutter` is set to
    `True`. `_MMU_FORM_TIP` rams the filament to form its tip, it is called by
    `MMU_FORM_TIP` and, without a cutter, when the filament is ejected before
-   homing (tool changes leave ramming to the slicer).
+   homing. It is Happy Hare's tip forming macro, its settings are the
+   variables of `_MMU_FORM_TIP_VARS` (ramming volume, cooling tube position
+   and length, cooling moves, skinnydip, ...), tune them with
+   `MMU_TEST_FORM_TIP`.
+
+   Without a cutter every unload (tool changes, `MMU_UNLOAD`, `MMU_EJECT`)
+   forms the tip of a loaded filament with `_MMU_FORM_TIP` (Happy Hare's
+   `force_form_tip_standalone`, `True` by default), so switching from cutting
+   to tip forming only needs:
+
+   ```ini
+   enable_filament_cutter: False
+   ```
+
+   Turn off the slicer's ramming (in OrcaSlicer `Enable filament ramming`,
+   which also skips its cooling moves), otherwise the filament is rammed
+   twice. To leave the ramming of the tool changes to the slicer instead, set
+   `force_form_tip_standalone: False`. While printing the macro rams
+   `variable_ramming_volume`, otherwise `variable_ramming_volume_standalone`,
+   set `ramming_volume` to the value you tuned with `MMU_TEST_FORM_TIP`.
+
+   Both can also be switched until Klipper restarts, e.g. from the start
+   G-code:
+
+   ```gcode
+   MMU_SET_PARAM PARAM=enable_filament_cutter VALUE=False
+   ```
+
+   Or choose it per print in the slicer, without changing the config: call
+   `MMU_FORM_TIP` in the change filament G-code right before the tool change
+   (and before `MMU_UNLOAD` in the end G-code). The unload then neither cuts
+   nor rams the formed tip again. Skip it on the slicer's first tool change
+   (`previous_extruder` is -1 there, the start G-code already loaded the tool),
+   otherwise that filament is unloaded and loaded again:
+
+   ```gcode
+   {if previous_extruder >= 0}MMU_FORM_TIP{endif}
+   T[next_extruder]
+   ```
 
    They were called `CUT_FILAMENT_IN_EXTRUDER` and `RAMMING_SLICER` before,
    rename them if your `mmu.cfg` still has the old names (Klipper stops with
@@ -523,16 +561,46 @@ The extension supplies all the necessary gcode commands.
    `RESUME_MMU` retries it and resumes the print. `MMU_TTG_MAP` shows each
    tool's group while endless spool is enabled.
 
-20. `MMU_FORM_TIP` / `MMU_CUT`
+20. `MMU_FORM_TIP` / `MMU_TEST_FORM_TIP` / `MMU_CUT`
 
    Run the tip forming (`_MMU_FORM_TIP`) or the in-extruder cut
    (`_MMU_CUT_TIP`) on its own, to test and tune the
    macros without a tool change. The filament must be loaded and the extruder
    hot enough (`min_temp_extruder`), `MMU_CUT` also needs
    `enable_filament_cutter: True`. The filament is left in the extruder
-   afterwards, `MMU_UNLOAD` takes it out. Unlike Happy Hare's
-   `MMU_TEST_FORM_TIP` they take no parameters: the MMU3 macros are plain
-   G-code without variables to override, edit them in `mmu.cfg` instead.
+   afterwards, `MMU_UNLOAD` takes it out to the MMU without ramming it again,
+   so you can look at the tip.
+
+   To tune the tip without the MMU, like in Happy Hare, push a filament into
+   the extruder by hand (FINDA must not see it) down to the nozzle, heat up
+   and run `MMU_TEST_FORM_TIP`. The MMU doesn't need to be homed and doesn't
+   move, the tip is formed and the filament is ejected from the extruder gears
+   (`FINAL_EJECT=1`) so you can pull it out:
+
+   ```gcode
+   M109 S215                                ; heat up
+   ; push the filament into the extruder until it comes out of the nozzle
+   MMU_TEST_FORM_TIP COOLING_MOVES=3        ; form the tip and eject it
+   ; pull the filament out, look at the tip, snip it off and repeat
+   ```
+
+   `MMU_TEST_FORM_TIP` (and `MMU_FORM_TIP`, its alias like in Happy Hare)
+   changes the `_MMU_FORM_TIP_VARS` before forming the tip, so you can tune
+   it without editing `mmu.cfg` and restarting Klipper:
+
+   ```gcode
+   MMU_TEST_FORM_TIP SHOW=1                 ; list the variables
+   MMU_TEST_FORM_TIP COOLING_MOVES=3        ; change one and form the tip
+   MMU_TEST_FORM_TIP USE_SKINNYDIP=True SKINNYDIP_DISTANCE=25 RUN=0  ; only set them
+   MMU_TEST_FORM_TIP RESET=1                ; back to the mmu.cfg values
+   ```
+
+   Any parameter other than `SHOW`, `RESET` and `RUN` is a variable name,
+   with or without the `variable_` prefix, an unknown name changes nothing.
+   The changes last until Klipper restarts. `MMU_TEST_FORM_TIP` lists the
+   variables each time in the `mmu.cfg` format, copy the values that work
+   to `_MMU_FORM_TIP_VARS`. Happy Hare's `EXTRUDER_ONLY` is not needed: the
+   MMU3 never moves the pulley during tip forming.
 
 21. `MMU_SLICER_TOOL_MAP`
 
@@ -592,6 +660,9 @@ The extension supplies all the necessary gcode commands.
 > | `UNSELECT_TOOL` | `MMU_UNSELECT` |
 > | `MMU_ENABLE`    | `MMU ENABLE=1` |
 > | `MMU_DISABLE`   | `MMU ENABLE=0` |
+>
+> `GET_MMU_PARAM` and `SET_MMU_PARAM` are now `MMU_GET_PARAM` and
+> `MMU_SET_PARAM` (no deprecation period, update your macros).
 
 The following is the list of all the commands available, most of them are
 internally used and will be removed in the future as they are not supplying any
@@ -600,7 +671,6 @@ design.
 
    ```gcode
    ENDSTOPS_STATUS
-   GET_MMU_PARAM
    HOME_IDLER
    K0  ; Not supported with MMU3-12x
    K1  ; Not supported with MMU3-12x
@@ -617,6 +687,7 @@ design.
    MMU_ENDLESS_SPOOL
    MMU_FORM_TIP
    MMU_GATE_MAP
+   MMU_GET_PARAM
    MMU_HELP
    MMU_HOME
    MMU_LOAD
@@ -626,9 +697,11 @@ design.
    MMU_RETRY
    MMU_RUNOUT
    MMU_SELECT
+   MMU_SET_PARAM
    MMU_STATS
    MMU_STATS_RESET_JOB
    MMU_STATUS
+   MMU_TEST_FORM_TIP
    MMU_TTG_MAP
    MMU_REMAP_TTG
    MMU_UNLOAD
@@ -637,7 +710,6 @@ design.
    PAUSE_MMU
    PULLEY_CALIBRATE
    RESUME_MMU
-   SET_MMU_PARAM
    T0
    T1
    T2
@@ -721,7 +793,7 @@ the new ones in new macros. Happy Hare's `printer.mmu.gate`,
 `printer.mmu.tool` (the tool mapped to the loaded gate) and
 `printer.mmu.ttg_map` are reported too.
 
-`GET_MMU_PARAM` / `SET_MMU_PARAM` use the new names as well:
+`MMU_GET_PARAM` / `MMU_SET_PARAM` use the new names as well:
 `PARAM=current_gate` / `PARAM=loaded_gate` instead of `PARAM=current_tool` /
 `PARAM=current_filament`. The config options (`number_of_tools`, ...) keep
 their names.
