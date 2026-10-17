@@ -86,11 +86,12 @@ G92 E0
 G1 Y3.2 F5000
 G1 X20 E6.36 F3000 ; prime the nozzle
 G92 E0
-G1 E-2 F3000 ; retract filament
-G92 E0
+; G1 E-1 F3000 ; retract filament
+; G92 E0
 
 ; Go to the filament change point
+G1 Z10 F240 ; lift the print head from the plate
 G1 X212 Y248 F{travel_speed*0.5*60}
-;G1 E2 F3000 ; un-retract filament
+;G1 E1 F3000 ; un-retract filament
 
 ; MZ FLOW TEMP START
