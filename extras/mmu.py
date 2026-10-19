@@ -839,6 +839,11 @@ def auto_pause(f: Callable) -> Callable:
     ``action:prompt_begin``/``action:prompt_show``, which is just UI flicker
     for a dialog that never went away.
 
+    A command failing while the MMU3 is already paused doesn't pause it again,
+    unless the printer is printing: the MMU3 was locked before the print
+    started (outside a print, or the print was resumed without unlocking it),
+    and the print must not go on without its tool change (#10).
+
     Args:
         f (Callable): The function to wrap.
 
@@ -862,7 +867,8 @@ def auto_pause(f: Callable) -> Callable:
             result = False
 
         if not result:
-            if not self.is_paused:
+            locked_in_print = self.is_paused and self.is_printer_printing()
+            if not self.is_paused or locked_in_print:
                 # remember what the operator was trying to do so recovery
                 # (MMU_RETRY / RESUME_MMU) does not depend on their memory
                 if self.current_operation is not None:
@@ -871,6 +877,13 @@ def auto_pause(f: Callable) -> Callable:
                         self.current_operation.error = error_msg
                     self.pending_operation = self.current_operation
                     self.current_operation = None
+                if locked_in_print:
+                    self.display_status_msg(
+                        "MMU is paused and needs to be unlocked, pausing the print."
+                    )
+                    # a pause outside the print left Klipper's pause_resume
+                    # paused, its PAUSE would only say "Print already paused"
+                    self.gcode.run_script_from_command("CLEAR_PAUSE")
                 self.pause()
             if self.pending_operation is not None:
                 self.show_recovery_prompt()
@@ -1786,6 +1799,20 @@ class MMU:
         """
         self.follow_print_stats(eventtime)
         return eventtime + PRINT_STATS_POLL_INTERVAL
+
+    def is_printer_printing(self) -> bool:
+        """Return True while ``print_stats`` is printing (not paused).
+
+        Unlike :attr:`is_in_print` this doesn't depend on
+        ``print_start_detection`` or ``MMU_PRINT_START``.
+
+        Returns:
+            bool: True if the printer is printing.
+        """
+        if self.print_stats is None:
+            return False
+        state = self.print_stats.get_status(self.reactor.monotonic()).get("state")
+        return state == "printing"
 
     @property
     def is_in_print(self) -> bool:
@@ -4332,7 +4359,7 @@ class MMU:
             self.gcode.run_script_from_command(f"M109 S{min_temp}")
         return self.unload_filament_from_hotend_with_ramming()
 
-    def eject_before_home(self) -> None:
+    def eject_before_home(self) -> bool:
         """Eject from extruder gear to MMU3.
 
         Returns:
@@ -4432,12 +4459,24 @@ class MMU:
         Then warns about the tools of the slicer tool map that don't match the
         gates, see :meth:`check_slicer_tool_map`.
 
+        Refuses to start while the MMU3 is paused and needs to be unlocked,
+        the error stops the print (#10).
+
         Args:
             gcmd (GCodeCommand): The G-code command.
+
+        Raises:
+            gcmd.error: If the MMU3 is paused.
 
         Returns:
             bool: True if command completed successfully, False otherwise.
         """
+        if self.is_enabled and self.is_paused:
+            raise gcmd.error(
+                "MMU is paused and needs to be unlocked, can't start the "
+                "print. Fix the problem, run MMU_UNLOCK and start the print "
+                "again."
+            )
         self.on_print_start()
         self.check_slicer_tool_map()
         return True
