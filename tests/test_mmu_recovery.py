@@ -20,8 +20,9 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
+    MMU,
     FilamentPos,
     FilamentSwitchSensorPosition,
     Operation,
@@ -29,25 +30,32 @@ from extras.mmu3 import (  # noqa: E402
 )
 
 
-def make_mmu() -> MMU3:
+def make_mmu() -> MMU:
     """Build a bare MMU3 instance without running __init__ or touching Klipper."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(5))
+    mmu.selected_tool = None
+    # no user macros are defined
+    mmu.printer = types.SimpleNamespace(lookup_object=lambda name, default=None: None)
     mmu.is_paused = False
     mmu.filament_pos = FilamentPos.UNLOADED
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.enable_no_selector_mode = False
     mmu.calls = []
     mmu.display_status_msg = lambda msg: mmu.calls.append(("msg", msg))
     mmu.respond_debug = lambda msg: None
     mmu.respond_info = lambda msg: None
 
-    def select_tool(tool_id: int) -> bool:
-        mmu.calls.append(("select", tool_id))
-        mmu.current_tool = tool_id
+    def select_gate(gate: int) -> bool:
+        mmu.calls.append(("select", gate))
+        mmu.current_gate = gate
         return True
 
-    mmu.select_tool = select_tool
+    mmu.select_gate = select_gate
 
     # each fake sub-step records itself and advances/retreats filament_pos
     def step(name: str, reached: FilamentPos):
@@ -103,7 +111,7 @@ def test_operation_describe_includes_error() -> None:
 
 
 @pytest.mark.parametrize(
-    "kind,to_tool,expected",
+    "kind,to_gate,expected",
     [
         (OperationKind.TOOL_CHANGE, 2, FilamentPos.LOADED),
         (OperationKind.LOAD, 0, FilamentPos.LOADED),
@@ -112,8 +120,20 @@ def test_operation_describe_includes_error() -> None:
         (OperationKind.HOME, None, FilamentPos.UNLOADED),
     ],
 )
-def test_operation_target_pos(kind, to_tool, expected):
-    assert Operation(kind, to_tool=to_tool).target_pos is expected
+def test_operation_target_pos(kind, to_gate, expected):
+    assert Operation(kind, to_gate=to_gate).target_pos is expected
+
+
+def test_operation_describe_names_a_gate_without_a_tool() -> None:
+    op = Operation(OperationKind.LOAD, to_gate=3)
+    assert op.describe() == "Load gate 3"
+
+
+def test_operation_describe_prefers_the_tool_over_the_gate() -> None:
+    op = Operation(
+        OperationKind.TOOL_CHANGE, from_tool=0, to_tool=1, from_gate=2, to_gate=4
+    )
+    assert op.describe() == "Tool change T0 => T1"
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +141,7 @@ def test_operation_target_pos(kind, to_tool, expected):
 # ---------------------------------------------------------------------------
 def test_full_load_from_unloaded_runs_every_step() -> None:
     mmu = make_mmu()
-    assert mmu.move_filament_to(FilamentPos.LOADED, tool_id=2) is True
+    assert mmu.move_filament_to(FilamentPos.LOADED, gate=2) is True
     assert mmu.calls == [
         ("select", 2),
         ("to_finda", FilamentPos.AT_FINDA),
@@ -132,23 +152,23 @@ def test_full_load_from_unloaded_runs_every_step() -> None:
 
 def test_load_resumes_from_broken_step_without_repeating_bowden() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 2
+    mmu.current_gate = 2
     mmu.filament_pos = FilamentPos.AT_EXTRUDER  # bowden move already done
-    assert mmu.move_filament_to(FilamentPos.LOADED, tool_id=2) is True
+    assert mmu.move_filament_to(FilamentPos.LOADED, gate=2) is True
     # only the hotend step runs, no re-select and no bowden move
     assert mmu.calls == [("to_hotend", FilamentPos.LOADED)]
 
 
 def test_partial_load_stops_at_target() -> None:
     mmu = make_mmu()
-    assert mmu.move_filament_to(FilamentPos.AT_EXTRUDER, tool_id=1) is True
+    assert mmu.move_filament_to(FilamentPos.AT_EXTRUDER, gate=1) is True
     assert [c[0] for c in mmu.calls] == ["select", "to_finda", "finda_to_extruder"]
 
 
 def test_full_unload_from_loaded_runs_every_step() -> None:
     mmu = make_mmu()
     mmu.filament_pos = FilamentPos.LOADED
-    mmu.current_filament = 3
+    mmu.loaded_gate = 3
     assert mmu.move_filament_to(FilamentPos.UNLOADED) is True
     assert [c[0] for c in mmu.calls] == [
         "from_hotend",
@@ -167,21 +187,21 @@ def test_unload_resumes_from_finda_only() -> None:
 def test_move_is_a_noop_when_already_at_target() -> None:
     mmu = make_mmu()
     mmu.filament_pos = FilamentPos.LOADED
-    assert mmu.move_filament_to(FilamentPos.LOADED, tool_id=1) is True
+    assert mmu.move_filament_to(FilamentPos.LOADED, gate=1) is True
     assert mmu.calls == []
 
 
 def test_move_fails_fast_when_paused() -> None:
     mmu = make_mmu()
     mmu.is_paused = True
-    assert mmu.move_filament_to(FilamentPos.LOADED, tool_id=1) is False
+    assert mmu.move_filament_to(FilamentPos.LOADED, gate=1) is False
     assert mmu.calls == []
 
 
 def test_load_needs_a_tool() -> None:
     mmu = make_mmu()
     assert mmu.move_filament_to(FilamentPos.LOADED) is False
-    assert ("msg", "Cannot load, no tool selected!") in mmu.calls
+    assert ("msg", "Cannot load, no gate selected!") in mmu.calls
 
 
 def test_load_step_failure_aborts_planner() -> None:
@@ -192,7 +212,7 @@ def test_load_step_failure_aborts_planner() -> None:
         return False
 
     mmu.load_filament_from_finda_to_extruder = failing
-    assert mmu.move_filament_to(FilamentPos.LOADED, tool_id=1) is False
+    assert mmu.move_filament_to(FilamentPos.LOADED, gate=1) is False
     assert [c[0] for c in mmu.calls] == ["select", "to_finda", "finda_to_extruder"]
 
 
@@ -206,11 +226,16 @@ def assess_mmu(
     sensor_position: FilamentSwitchSensorPosition = (
         FilamentSwitchSensorPosition.OnGears
     ),
-) -> MMU3:
-    mmu = object.__new__(MMU3)
+) -> MMU:
+    mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(5))
+    mmu.selected_tool = None
     mmu.filament_pos = tracked
-    mmu.current_tool = 1
-    mmu.current_filament = 1
+    mmu.current_gate = 1
+    mmu.loaded_gate = 1
     mmu.filament_switch_sensor_position = sensor_position
     mmu.respond_debug = lambda msg: None
     mmu.is_filament_in_finda = lambda: in_finda
@@ -221,7 +246,7 @@ def assess_mmu(
 def test_assess_no_sensors_means_unloaded() -> None:
     mmu = assess_mmu(False, False, FilamentPos.LOADED)
     assert mmu.assess_filament_pos() is FilamentPos.UNLOADED
-    assert mmu.current_filament is None
+    assert mmu.loaded_gate is None
 
 
 def test_assess_finda_only_means_at_finda() -> None:
@@ -237,11 +262,11 @@ def test_assess_both_sensors_keeps_tracked_progress_clamped() -> None:
     assert mmu.assess_filament_pos() is FilamentPos.AT_EXTRUDER
 
 
-def test_assess_recovers_current_filament_from_selected_tool() -> None:
+def test_assess_recovers_loaded_gate_from_selected_gate() -> None:
     mmu = assess_mmu(True, False, FilamentPos.AT_FINDA)
-    mmu.current_filament = None
+    mmu.loaded_gate = None
     mmu.assess_filament_pos()
-    assert mmu.current_filament == 1
+    assert mmu.loaded_gate == 1
 
 
 # --- FilamentSwitchSensorPosition-specific inference ------------------------

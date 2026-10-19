@@ -20,8 +20,11 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
+    GATE_MAP_VARIABLE,
+    MMU,
+    TOTAL_STATS_VARIABLE,
     Operation,
     OperationKind,
     OperationStats,
@@ -29,17 +32,22 @@ from extras.mmu3 import (  # noqa: E402
 )
 
 
-def make_mmu() -> MMU3:
+def make_mmu() -> MMU:
     """Build a bare MMU3 instance, enough for track_operation to run."""
-    mmu = object.__new__(MMU3)
-    mmu.current_filament = None
+    mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(5))
+    mmu.selected_tool = None
+    mmu.loaded_gate = None
     mmu.current_operation = None
     mmu.pending_operation = None
     mmu.total_stats = OperationStats()
     mmu.job_stats = OperationStats()
     mmu.save_calls = 0
     mmu.save_total_stats = lambda: setattr(mmu, "save_calls", mmu.save_calls + 1)
-    mmu._pending_operation_resolved = MMU3._pending_operation_resolved.__get__(mmu)
+    mmu._pending_operation_resolved = MMU._pending_operation_resolved.__get__(mmu)
     return mmu
 
 
@@ -142,11 +150,11 @@ def test_from_dict_empty_is_safe() -> None:
 # ---------------------------------------------------------------------------
 def test_track_operation_records_success_in_both_scopes() -> None:
     mmu = make_mmu()
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
 
     @track_operation(OperationKind.TOOL_CHANGE)
     def cmd_tx(self, gcmd, tool_id=0):
-        self.current_filament = tool_id
+        self.loaded_gate = tool_id
         return True
 
     assert cmd_tx(mmu, None, tool_id=2) is True
@@ -160,7 +168,7 @@ def test_track_operation_records_success_in_both_scopes() -> None:
 
 def test_track_operation_records_failure_on_false_return() -> None:
     mmu = make_mmu()
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
 
     @track_operation(OperationKind.TOOL_CHANGE)
     def cmd_tx(self, gcmd, tool_id=0):
@@ -176,7 +184,7 @@ def test_track_operation_records_failure_on_false_return() -> None:
 
 def test_track_operation_records_failure_when_command_raises() -> None:
     mmu = make_mmu()
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
 
     @track_operation(OperationKind.TOOL_CHANGE)
     def cmd_tx(self, gcmd, tool_id=0):
@@ -202,3 +210,44 @@ def test_track_operation_a_broken_save_total_stats_does_not_break_the_command() 
         return True
 
     assert cmd_home(mmu, None) is True
+
+
+# ---------------------------------------------------------------------------
+# save_variables
+# ---------------------------------------------------------------------------
+def make_saved_mmu(variables: dict) -> MMU:
+    """Build a bare MMU3 instance with the given saved variables."""
+    mmu = object.__new__(MMU)
+    mmu.ttg_map = list(range(5))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(5))
+    mmu.selected_tool = None
+    mmu.save_variables = types.SimpleNamespace(allVariables=variables)
+    return mmu
+
+
+def test_load_variable_reads_the_saved_value() -> None:
+    mmu = make_saved_mmu({"mmu_total_stats": {"attempts": {"home": 1}}})
+    assert mmu.load_variable(TOTAL_STATS_VARIABLE) == {"attempts": {"home": 1}}
+
+
+@pytest.mark.parametrize(
+    ("name", "legacy_name"),
+    [
+        (TOTAL_STATS_VARIABLE, "mmu3_total_stats"),
+        (GATE_MAP_VARIABLE, "mmu3_gate_map"),
+    ],
+)
+def test_load_variable_falls_back_to_the_legacy_name(name, legacy_name) -> None:
+    mmu = make_saved_mmu({legacy_name: {"old": 1}})
+    assert mmu.load_variable(name) == {"old": 1}
+
+
+def test_load_variable_prefers_the_new_name() -> None:
+    mmu = make_saved_mmu({"mmu_gate_map": {"new": 1}, "mmu3_gate_map": {"old": 1}})
+    assert mmu.load_variable(GATE_MAP_VARIABLE) == {"new": 1}
+
+
+def test_load_variable_defaults_to_an_empty_dict() -> None:
+    assert make_saved_mmu({}).load_variable(GATE_MAP_VARIABLE) == {}

@@ -15,14 +15,14 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import MMU3, FilamentPos  # noqa: E402
-from extras.mmu3_gate_map import (  # noqa: E402
+from extras.mmu import MMU, FilamentPos, SlicerToolMap  # noqa: E402
+from extras.mmu_gate_map import (  # noqa: E402
     GATE_AVAILABLE,
     GATE_EMPTY,
     GATE_UNKNOWN,
     GateMap,
 )
-from extras.mmu3_hh_compat import ACTION_CHECKING, ACTION_IDLE  # noqa: E402
+from extras.mmu_hh_compat import ACTION_CHECKING, ACTION_IDLE  # noqa: E402
 
 
 class CommandError(Exception):
@@ -59,19 +59,28 @@ class FakeGCmd:
 class FakePrinter:
     command_error = CommandError
 
+    def lookup_object(self, name, default=None):
+        # no user macros are defined
+        return default
 
-def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU3:
+
+def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU:
     """Build a bare MMU3 whose moves only record what was done."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.printer = FakePrinter()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.save_variables = None
     mmu.is_enabled = True
     mmu.is_homed = True
     mmu.is_paused = False
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.current_operation = None
     mmu.pending_operation = None
@@ -82,19 +91,19 @@ def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU3:
     mmu.paused = False
     mmu.empty_gates = set(empty_gates)
 
-    def select_tool(tool_id):
-        mmu.calls.append(("select", tool_id))
+    def select_gate(gate):
+        mmu.calls.append(("select", gate))
         assert mmu.action == ACTION_CHECKING
-        mmu.current_tool = tool_id
+        mmu.current_gate = gate
         return True
 
     def load_filament_to_finda_in_loop():
-        mmu.calls.append(("load", mmu.current_tool))
-        return mmu.current_tool not in mmu.empty_gates
+        mmu.calls.append(("load", mmu.current_gate))
+        return mmu.current_gate not in mmu.empty_gates
 
     def unload_filament_from_finda():
-        mmu.calls.append(("unload", mmu.current_tool))
-        mmu.current_filament = None
+        mmu.calls.append(("unload", mmu.current_gate))
+        mmu.loaded_gate = None
         mmu.filament_pos = FilamentPos.UNLOADED
         return True
 
@@ -107,12 +116,13 @@ def make_mmu(num_tools: int = 5, empty_gates=()) -> MMU3:
         def do_set_position(self, pos):
             pass
 
-    mmu.select_tool = select_tool
+    mmu.select_gate = select_gate
     mmu.load_filament_to_finda_in_loop = load_filament_to_finda_in_loop
     mmu.unload_filament_from_finda = unload_filament_from_finda
     mmu.pulley_stepper = FakeStepper()
     mmu.pause = pause
     mmu.disable_steppers = lambda: True
+    mmu.enable_steppers = lambda: None
     mmu.show_recovery_prompt = lambda: None
     mmu.respond_info = mmu.messages.append
     mmu.respond_debug = lambda msg: None
@@ -146,7 +156,7 @@ def test_get_check_gates_param(params, check_all, expected) -> None:
 
 def test_check_gate_without_gate_uses_selected_gate() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 3
+    mmu.current_gate = 3
     assert mmu.get_check_gates_param(FakeGCmd(), check_all=False) == [3]
 
 
@@ -210,10 +220,46 @@ def test_check_gate_checks_only_the_given_gates() -> None:
 
 def test_check_gate_reselects_the_previous_gate() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 1
+    mmu.current_gate = 1
     assert mmu.cmd_mmu_check_gate(FakeGCmd(GATE=4)) is True
     assert mmu.calls[-1] == ("select", 1)
-    assert mmu.current_tool == 1
+    assert mmu.current_gate == 1
+
+
+def test_check_gate_holds_the_idler_on_the_selected_gate() -> None:
+    # the steppers were disabled after the previous command, the idler is
+    # already on the gate so its move doesn't re-enable it
+    mmu = make_mmu()
+    mmu.current_gate = 2
+    mmu.enable_steppers = lambda: mmu.calls.append(("steppers_on",))
+    mmu.disable_steppers = lambda: mmu.calls.append(("steppers_off",))
+    assert mmu.cmd_mmu_check_gate(FakeGCmd()) is True
+    assert mmu.calls == [
+        ("steppers_on",),
+        ("select", 2),
+        ("load", 2),
+        ("unload", 2),
+        ("steppers_off",),
+    ]
+
+
+def test_enable_steppers_enables_the_idler_and_selector() -> None:
+    class FakeStepper:
+        def __init__(self) -> None:
+            self.enabled = None
+
+        def do_enable(self, enable):
+            self.enabled = enable
+
+    mmu = object.__new__(MMU)
+    mmu.pulley_stepper = FakeStepper()
+    mmu.idler_stepper = FakeStepper()
+    mmu.selector_stepper = FakeStepper()
+    mmu.enable_steppers()
+    assert mmu.idler_stepper.enabled is True
+    assert mmu.selector_stepper.enabled is True
+    # the pulley is enabled by its first move
+    assert mmu.pulley_stepper.enabled is None
 
 
 def test_check_gate_without_selection_is_refused() -> None:
@@ -228,7 +274,7 @@ def test_check_gate_without_selection_is_refused() -> None:
 )
 def test_check_gates_refused_while_filament_is_loaded(pos) -> None:
     mmu = make_mmu()
-    mmu.current_filament = 2
+    mmu.loaded_gate = 2
     mmu.filament_pos = pos
     assert mmu.cmd_mmu_check_gates(FakeGCmd()) is False
     assert mmu.calls == []

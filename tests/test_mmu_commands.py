@@ -15,14 +15,15 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
+    MMU,
     FilamentPos,
     Operation,
     OperationKind,
 )
-from extras.mmu3_gate_map import GateMap  # noqa: E402
-from extras.mmu3_hh_compat import ACTION_IDLE, ACTION_LOADING  # noqa: E402
+from extras.mmu_gate_map import GateMap  # noqa: E402
+from extras.mmu_hh_compat import ACTION_IDLE, ACTION_LOADING  # noqa: E402
 
 
 class CommandError(Exception):
@@ -70,17 +71,22 @@ class FakeGCode:
             self.help[cmd] = desc
 
 
-def make_mmu(num_tools: int = 5) -> MMU3:
+def make_mmu(num_tools: int = 5) -> MMU:
     """Build a bare MMU3 with just what the commands read."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.gcode = FakeGCode()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.is_enabled = True
     mmu.is_homed = False
     mmu.is_paused = False
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.action = ACTION_IDLE
     mmu.current_operation = None
@@ -93,6 +99,7 @@ def make_mmu(num_tools: int = 5) -> MMU3:
         return True
 
     mmu.disable_steppers = disable_steppers
+    mmu.enable_steppers = lambda: None
     mmu.respond_info = mmu.messages.append
     mmu.display_status_msg = mmu.messages.append
     return mmu
@@ -139,18 +146,61 @@ def test_mmu_rejects_invalid_enable(value) -> None:
 
 
 @pytest.mark.parametrize(
-    ("old_name", "new_name", "enabled"),
-    [("MMU_ENABLE", "MMU ENABLE=1", True), ("MMU_DISABLE", "MMU ENABLE=0", False)],
+    "old_name",
+    [
+        "LT",
+        "UT",
+        "HOME_MMU",
+        "UNLOCK_MMU",
+        "SELECT_TOOL",
+        "UNSELECT_TOOL",
+        "MMU_ENABLE",
+        "MMU_DISABLE",
+        "GET_MMU_PARAM",
+        "SET_MMU_PARAM",
+    ],
 )
-def test_old_enable_commands_still_work_with_a_warning(
-    old_name, new_name, enabled
-) -> None:
+def test_old_command_names_are_removed(old_name) -> None:
     mmu = make_mmu()
-    mmu.is_enabled = not enabled
     mmu.register_commands()
-    assert mmu.gcode.handlers[old_name](FakeGCmd()) is True
-    assert mmu.is_enabled is enabled
-    assert mmu.messages[0] == f"{old_name} is deprecated, use {new_name} instead."
+    assert old_name not in mmu.gcode.handlers
+
+
+def test_mmu_set_param_switches_from_cutting_to_tip_forming() -> None:
+    mmu = make_mmu()
+    mmu.register_commands()
+    mmu.enable_filament_cutter = True
+    mmu.force_form_tip_standalone = False
+    set_param = mmu.gcode.handlers["MMU_SET_PARAM"]
+    set_param(FakeGCmd(PARAM="enable_filament_cutter", VALUE="False"))
+    set_param(FakeGCmd(PARAM="force_form_tip_standalone", VALUE="True"))
+    assert mmu.enable_filament_cutter is False
+    assert mmu.force_form_tip_standalone is True
+    assert mmu.messages == [
+        "enable_filament_cutter: False",
+        "force_form_tip_standalone: True",
+    ]
+
+
+@pytest.mark.parametrize("param", ["enable_filament_cuter", "disable_steppers"])
+def test_mmu_set_param_rejects_unknown_params(param) -> None:
+    # a typo or a method name
+    mmu = make_mmu()
+    mmu.register_commands()
+    before = dict(vars(mmu))
+    handler = mmu.gcode.handlers["MMU_SET_PARAM"]
+    assert handler(FakeGCmd(PARAM=param, VALUE="False")) is False
+    assert vars(mmu) == {**before, "messages": [f"{param}: doesn't exist!"]}
+
+
+def test_mmu_get_param_prints_the_value() -> None:
+    mmu = make_mmu()
+    mmu.register_commands()
+    mmu.force_form_tip_standalone = True
+    assert mmu.gcode.handlers["MMU_GET_PARAM"](
+        FakeGCmd(PARAM="force_form_tip_standalone")
+    )
+    assert mmu.messages == ["force_form_tip_standalone: True"]
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +211,8 @@ def test_register_commands_gives_the_commands_a_description() -> None:
     mmu.register_commands()
     for name in ("MMU", "MMU_HELP", "MMU_STATUS", "MMU_HOME", "M702"):
         assert mmu.gcode.help[name]
-    # aliases and unsupported commands stay out of Klipper's HELP
-    for name in ("MMU_ENABLE", "MMU_DISABLE", "HOME_MMU", "MMU_TTG_MAP"):
+    # unsupported commands stay out of Klipper's HELP
+    for name in ("MMU_SPOOLMAN", "MMU_TEST_CONFIG"):
         assert name in mmu.gcode.handlers
         assert name not in mmu.gcode.help
 
@@ -203,8 +253,10 @@ def test_mmu_status_idle() -> None:
         "Paused: no",
         "Selected gate: none",
         "Loaded gate: none",
+        "Loaded tool: none",
         "Filament position: UNLOADED",
         f"Action: {ACTION_IDLE}",
+        "Endless spool: disabled",
         "Pending operation: none",
     ]
     assert gate_map.splitlines()[0] == "Gate map:"
@@ -215,8 +267,8 @@ def test_mmu_status_loaded_and_paused() -> None:
     mmu = make_mmu(num_tools=3)
     mmu.is_homed = True
     mmu.is_paused = True
-    mmu.current_tool = 2
-    mmu.current_filament = 1
+    mmu.current_gate = 2
+    mmu.loaded_gate = 1
     mmu.filament_pos = FilamentPos.AT_EXTRUDER
     mmu.action = ACTION_LOADING
     operation = Operation(OperationKind.TOOL_CHANGE, from_tool=1, to_tool=2)
@@ -226,8 +278,9 @@ def test_mmu_status_loaded_and_paused() -> None:
     lines = mmu.messages[0].splitlines()
     assert "Homed: yes" in lines
     assert "Paused: yes" in lines
-    assert "Selected gate: T2" in lines
-    assert "Loaded gate: T1" in lines
+    assert "Selected gate: 2" in lines
+    assert "Loaded gate: 1" in lines
+    assert "Loaded tool: T1" in lines
     assert "Filament position: AT_EXTRUDER" in lines
     assert f"Action: {ACTION_LOADING}" in lines
     assert f"Pending operation: {operation.describe()}" in lines

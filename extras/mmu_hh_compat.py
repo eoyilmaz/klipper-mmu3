@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from extras.mmu3 import MMU3
+    from extras.mmu import MMU
 
 
 TOOL_GATE_UNKNOWN = -1
@@ -53,15 +53,24 @@ SPOOLMAN_OFF = "off"
 SPOOLMAN_READONLY = "readonly"
 SPOOLMAN_SUPPORT_VALUES = (SPOOLMAN_OFF, SPOOLMAN_READONLY)
 
+PRINT_STATE_READY = "ready"
+PRINT_STATE_PRINTING = "printing"
+PRINT_STATE_PAUSED = "paused"
+PRINT_STATE_COMPLETE = "complete"
+
 # Klipper print_stats.state -> Happy Hare print_state
 PRINT_STATE_MAP = {
-    "standby": "ready",
-    "printing": "printing",
-    "paused": "paused",
-    "complete": "complete",
+    "standby": PRINT_STATE_READY,
+    "printing": PRINT_STATE_PRINTING,
+    "paused": PRINT_STATE_PAUSED,
+    "complete": PRINT_STATE_COMPLETE,
     "cancelled": "cancelled",
     "error": "error",
 }
+# the print_state values of a print in progress
+IN_PRINT_STATES = (PRINT_STATE_PRINTING, PRINT_STATE_PAUSED)
+# the end states MMU_PRINT_END accepts, same as Happy Hare
+PRINT_END_STATES = ("complete", "cancelled", "error", "ready", "standby")
 
 
 def _or_unknown(value: None | int) -> int:
@@ -77,14 +86,16 @@ def _or_unknown(value: None | int) -> int:
 
 
 class MmuStatus:
-    """The ``mmu`` status object, in Happy Hare's shape.
+    """The Happy Hare fields of the ``mmu`` status, in Happy Hare's shape.
+
+    :meth:`extras.mmu.MMU.get_status` adds the MMU3 specific fields to these.
 
     Args:
-        mmu3 (MMU3): The MMU3 instance to report the status of.
+        mmu (MMU): The MMU instance to report the status of.
     """
 
-    def __init__(self, mmu3: MMU3) -> None:
-        self.mmu3 = mmu3
+    def __init__(self, mmu: MMU) -> None:
+        self.mmu = mmu
 
     @property
     def switch_sensor_key(self) -> str:
@@ -96,11 +107,11 @@ class MmuStatus:
         Returns:
             str: ``toolhead`` or ``extruder``.
         """
-        # imported here, mmu3 imports this module
-        from extras.mmu3 import FilamentSwitchSensorPosition
+        # imported here, mmu imports this module
+        from extras.mmu import FilamentSwitchSensorPosition
 
         if (
-            self.mmu3.filament_switch_sensor_position
+            self.mmu.filament_switch_sensor_position
             == FilamentSwitchSensorPosition.PostGears
         ):
             return "toolhead"
@@ -115,9 +126,9 @@ class MmuStatus:
         Returns:
             int: The filament position.
         """
-        if self.mmu3.filament_tracker.is_bowden_move:
+        if self.mmu.filament_tracker.is_bowden_move:
             return FILAMENT_POS_IN_BOWDEN
-        name = self.mmu3.filament_pos.name
+        name = self.mmu.filament_pos.name
         if name == "AT_EXTRUDER":
             # homed at the extruder entry sensor, or sitting in the gears
             # before the toolhead sensor
@@ -137,7 +148,7 @@ class MmuStatus:
         Returns:
             str: ``Loaded``, ``Unloaded`` or ``Unknown`` (partially loaded).
         """
-        name = self.mmu3.filament_pos.name
+        name = self.mmu.filament_pos.name
         if name == "LOADED":
             return "Loaded"
         if name == "UNLOADED":
@@ -150,36 +161,39 @@ class MmuStatus:
         Returns:
             int: The gate index or -1.
         """
-        mmu3 = self.mmu3
-        if mmu3.current_tool is not None:
-            return mmu3.current_tool
-        return _or_unknown(mmu3.current_filament)
+        mmu = self.mmu
+        if mmu.current_gate is not None:
+            return mmu.current_gate
+        return _or_unknown(mmu.loaded_gate)
 
     def tool(self) -> int:
         """Return the loaded tool, falling back to the selected one.
 
+        The tool that maps to the loaded gate (or the selected gate) in the
+        tool-to-gate map, see :meth:`extras.mmu.MMU.gate_to_tool`.
+
         Returns:
             int: The tool index or -1.
         """
-        mmu3 = self.mmu3
-        if mmu3.current_filament is not None:
-            return mmu3.current_filament
-        return _or_unknown(mmu3.current_tool)
+        mmu = self.mmu
+        gate = mmu.loaded_gate if mmu.loaded_gate is not None else mmu.current_gate
+        return _or_unknown(mmu.gate_to_tool(gate))
 
     def print_state(self, eventtime: float) -> str:
         """Return the Happy Hare ``print_state``.
 
+        Follows ``print_stats`` first, so the panel sees a print start / end
+        right away instead of on the next poll.
+
         Returns:
             str: e.g. ``ready``, ``printing``, ``pause_locked``.
         """
-        mmu3 = self.mmu3
-        if mmu3.is_paused:
+        mmu = self.mmu
+        mmu.follow_print_stats(eventtime)
+        if mmu.is_paused:
             # the MMU paused itself and waits for the operator
             return "pause_locked"
-        if mmu3.print_stats is None:
-            return "ready"
-        state = mmu3.print_stats.get_status(eventtime).get("state", "standby")
-        return PRINT_STATE_MAP.get(state, "ready")
+        return mmu.print_state
 
     def filament_direction(self) -> int:
         """Return the direction the filament is currently moving.
@@ -187,7 +201,7 @@ class MmuStatus:
         Returns:
             int: 1 loading, -1 unloading, 0 idle.
         """
-        action = self.mmu3.action
+        action = self.mmu.action
         if action in LOAD_ACTIONS:
             return DIRECTION_LOAD
         if action in UNLOAD_ACTIONS:
@@ -205,11 +219,11 @@ class MmuStatus:
         Returns:
             dict: Happy Hare sensor name -> triggered.
         """
-        mmu3 = self.mmu3
-        sensors = {"mmu_gate": mmu3.finda_triggered}
-        if mmu3.filament_switch_sensor is not None:
+        mmu = self.mmu
+        sensors = {"mmu_gate": mmu.finda_triggered}
+        if mmu.filament_switch_sensor is not None:
             sensors[self.switch_sensor_key] = bool(
-                mmu3.filament_switch_sensor.get_status(None)["filament_detected"]
+                mmu.filament_switch_sensor.get_status(None)["filament_detected"]
             )
         return sensors
 
@@ -219,10 +233,10 @@ class MmuStatus:
         Returns:
             int: The count.
         """
-        # imported here, mmu3 imports this module
-        from extras.mmu3 import OperationKind
+        # imported here, mmu imports this module
+        from extras.mmu import OperationKind
 
-        stats = self.mmu3.job_stats
+        stats = self.mmu.job_stats
         return stats.attempts.get(OperationKind.TOOL_CHANGE, 0) - stats.failures.get(
             OperationKind.TOOL_CHANGE, 0
         )
@@ -233,8 +247,8 @@ class MmuStatus:
         Returns:
             dict: The filament name, material, color, spool id and temperature.
         """
-        gate_map = self.mmu3.gate_map
-        gate = self.mmu3.current_filament
+        gate_map = self.mmu.gate_map
+        gate = self.mmu.loaded_gate
         if not gate_map.is_valid_gate(gate):
             return {
                 "filament_name": "",
@@ -264,18 +278,18 @@ class MmuStatus:
         Returns:
             dict: The status.
         """
-        mmu3 = self.mmu3
-        num_gates = mmu3.number_of_tools
-        gate_map = mmu3.gate_map
-        operation = mmu3.current_operation
+        mmu = self.mmu
+        num_gates = mmu.number_of_tools
+        gate_map = mmu.gate_map
+        operation = mmu.current_operation
         is_tool_change = operation is not None and operation.kind.value == "tool_change"
         print_state = self.print_state(eventtime)
         return {
-            "enabled": mmu3.is_enabled,
+            "enabled": mmu.is_enabled,
             "num_gates": num_gates,
-            "is_homed": mmu3.is_homed,
-            "is_locked": mmu3.is_paused,
-            "is_paused": mmu3.is_paused,
+            "is_homed": mmu.is_homed,
+            "is_locked": mmu.is_paused,
+            "is_paused": mmu.is_paused,
             "is_in_print": print_state in ("printing", "paused", "pause_locked"),
             "print_state": print_state,
             "unit": 0,
@@ -291,21 +305,23 @@ class MmuStatus:
             ),
             "num_toolchanges": self.num_toolchanges(),
             "active_filament": self.active_filament(),
-            "action": mmu3.action,
+            "action": mmu.action,
             "filament": self.filament(),
             "filament_pos": self.filament_pos(),
-            "filament_position": round(mmu3.filament_tracker.position(eventtime), 1),
+            "filament_position": round(mmu.filament_tracker.position(eventtime), 1),
             "filament_direction": self.filament_direction(),
-            "bowden_progress": mmu3.filament_tracker.bowden_progress(eventtime),
+            "bowden_progress": mmu.filament_tracker.bowden_progress(eventtime),
             "reason_for_pause": (
-                mmu3.pending_operation.describe()
-                if mmu3.pending_operation is not None
+                mmu.pending_operation.describe()
+                if mmu.pending_operation is not None
                 else ""
             ),
-            "ttg_map": list(range(num_gates)),
-            "endless_spool_groups": list(range(num_gates)),
-            "endless_spool": 0,
-            "endless_spool_enabled": 0,
+            "ttg_map": list(mmu.ttg_map),
+            "slicer_tool_map": mmu.slicer_tool_map.to_dict(),
+            "endless_spool_groups": list(mmu.endless_spool_groups),
+            # Happy Hare's deprecated name of endless_spool_enabled
+            "endless_spool": int(mmu.endless_spool_enabled),
+            "endless_spool_enabled": int(mmu.endless_spool_enabled),
             "gate_status": gate_map.statuses(),
             "gate_filament_name": gate_map.names(),
             "gate_material": gate_map.materials(),
@@ -313,13 +329,18 @@ class MmuStatus:
             "gate_temperature": gate_map.temperatures(),
             "gate_spool_id": gate_map.spool_ids(),
             "gate_speed_override": gate_map.speed_overrides(),
-            "spoolman_support": mmu3.spoolman_support,
+            "spoolman_support": mmu.spoolman_support,
             "pending_spool_id": -1,
             "has_bypass": False,
             "sync_drive": False,
             "clog_detection": 0,
             "clog_detection_enabled": 0,
-            "print_start_detection": 0,
+            "print_start_detection": int(mmu.print_start_detection),
+            # read by the tip forming macro: whether the tool change is an
+            # endless spool swap, and the filament left in the extruder after
+            # a cut (not tracked, the next load pushes it out)
+            "runout": mmu.is_handling_runout,
+            "extruder_filament_remaining": 0.0,
             "sensors": self.sensors(),
         }
 
@@ -330,11 +351,11 @@ class MmuMachine:
     Mainsail takes the number of gates drawn per unit from here.
 
     Args:
-        mmu3 (MMU3): The MMU3 instance to report the status of.
+        mmu (MMU): The MMU instance to report the status of.
     """
 
-    def __init__(self, mmu3: MMU3) -> None:
-        self.mmu3 = mmu3
+    def __init__(self, mmu: MMU) -> None:
+        self.mmu = mmu
 
     def get_status(self, eventtime: float) -> dict:
         """Return the status in Happy Hare's ``mmu_machine`` shape.
@@ -345,7 +366,7 @@ class MmuMachine:
         Returns:
             dict: The status.
         """
-        mmu3 = self.mmu3
+        mmu = self.mmu
         return {
             "num_units": 1,
             "unit_0": {
@@ -354,11 +375,11 @@ class MmuMachine:
                 # default MMU logo
                 "vendor": "Prusa",
                 "version": "3.0",
-                "num_gates": mmu3.number_of_tools,
+                "num_gates": mmu.number_of_tools,
                 "first_gate": 0,
                 "selector_type": (
                     "VirtualSelector"
-                    if mmu3.enable_no_selector_mode
+                    if mmu.enable_no_selector_mode
                     else "LinearSelector"
                 ),
                 "variable_rotation_distances": False,

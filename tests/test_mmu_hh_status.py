@@ -19,8 +19,9 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import (  # noqa: E402
-    MMU3,
+from extras.mmu import (  # noqa: E402
+    SlicerToolMap,
+    MMU,
     FilamentPos,
     FilamentTracker,
     FilamentSwitchSensorPosition,
@@ -28,8 +29,8 @@ from extras.mmu3 import (  # noqa: E402
     OperationKind,
     OperationStats,
 )
-from extras.mmu3_gate_map import GateMap  # noqa: E402
-from extras.mmu3_hh_compat import (  # noqa: E402
+from extras.mmu_gate_map import GateMap  # noqa: E402
+from extras.mmu_hh_compat import (  # noqa: E402
     ACTION_CUTTING_FILAMENT,
     ACTION_FORMING_TIP,
     ACTION_IDLE,
@@ -71,17 +72,26 @@ class FakeSwitchSensor:
         return {"filament_detected": self.detected}
 
 
-def make_mmu(num_tools: int = 5) -> MMU3:
+def make_mmu(num_tools: int = 5) -> MMU:
     """Build a bare MMU3 instance with just what the status objects read."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.is_enabled = True
     mmu.is_homed = True
     mmu.is_paused = False
     mmu.print_stats = FakePrintStats("standby")
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu._print_stats_state = "standby"
+    mmu.print_state = "ready"
+    mmu.print_start_detection = True
+    mmu.is_handling_runout = False
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.finda_triggered = False
     mmu.current_operation = None
@@ -154,7 +164,7 @@ def test_filament_state(pos, expected) -> None:
 # gate / tool
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
-    ("current_tool", "current_filament", "gate", "tool"),
+    ("current_gate", "loaded_gate", "gate", "tool"),
     [
         (None, None, -1, -1),
         (2, None, 2, 2),
@@ -162,10 +172,10 @@ def test_filament_state(pos, expected) -> None:
         (1, 3, 1, 3),
     ],
 )
-def test_gate_and_tool_fallbacks(current_tool, current_filament, gate, tool) -> None:
+def test_gate_and_tool_fallbacks(current_gate, loaded_gate, gate, tool) -> None:
     mmu = make_mmu()
-    mmu.current_tool = current_tool
-    mmu.current_filament = current_filament
+    mmu.current_gate = current_gate
+    mmu.loaded_gate = loaded_gate
     status = MmuStatus(mmu).get_status(0.0)
     assert status["gate"] == gate
     assert status["tool"] == tool
@@ -203,10 +213,21 @@ def test_last_and_next_tool_unknown_outside_tool_change() -> None:
 )
 def test_print_state_mapping(state, expected, in_print) -> None:
     mmu = make_mmu()
-    mmu.print_stats = FakePrintStats(state)
+    # every state but standby is reached from a print
+    mmu.print_stats.state = "printing"
+    MmuStatus(mmu).get_status(0.0)
+    mmu.print_stats.state = state
     status = MmuStatus(mmu).get_status(0.0)
     assert status["print_state"] == expected
     assert status["is_in_print"] is in_print
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_print_start_detection_is_reported(enabled) -> None:
+    mmu = make_mmu()
+    mmu.print_start_detection = enabled
+    mmu.is_handling_runout = False
+    assert MmuStatus(mmu).get_status(0.0)["print_start_detection"] == int(enabled)
 
 
 def test_print_state_without_print_stats_is_ready() -> None:
@@ -277,8 +298,51 @@ def test_arrays_are_num_gates_long(num_tools) -> None:
         assert len(status[key]) == num_tools, key
 
 
-def test_ttg_map_is_identity() -> None:
+def test_ttg_map_is_identity_by_default() -> None:
     assert MmuStatus(make_mmu()).get_status(0.0)["ttg_map"] == [0, 1, 2, 3, 4]
+
+
+def test_ttg_map_is_reported_as_a_new_list() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [4, 3, 2, 1, 0]
+    reported = MmuStatus(mmu).get_status(0.0)["ttg_map"]
+    assert reported == [4, 3, 2, 1, 0]
+    # Klipper only pushes a status change if the object is a new one
+    assert reported is not mmu.ttg_map
+
+
+@pytest.mark.parametrize(
+    ("current_gate", "loaded_gate", "gate", "tool"),
+    [
+        (None, None, -1, -1),
+        (1, None, 1, 3),
+        (None, 3, 3, 1),
+        (1, 3, 1, 1),
+        # no tool maps to gate 4
+        (None, 4, 4, -1),
+    ],
+)
+def test_tool_is_the_tool_mapped_to_the_gate(
+    current_gate, loaded_gate, gate, tool
+) -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [0, 3, 2, 1, 0]
+    mmu.current_gate = current_gate
+    mmu.loaded_gate = loaded_gate
+    status = MmuStatus(mmu).get_status(0.0)
+    assert status["gate"] == gate
+    assert status["tool"] == tool
+
+
+def test_last_and_next_tool_are_tools_not_gates() -> None:
+    mmu = make_mmu()
+    mmu.ttg_map = [3, 4, 2, 1, 0]
+    mmu.current_operation = Operation(
+        OperationKind.TOOL_CHANGE, from_tool=0, to_tool=1, from_gate=3, to_gate=4
+    )
+    status = MmuStatus(mmu).get_status(0.0)
+    assert status["last_tool"] == 0
+    assert status["next_tool"] == 1
 
 
 def test_gate_arrays_reflect_gate_map() -> None:
@@ -295,7 +359,7 @@ def test_active_filament_of_loaded_gate() -> None:
     mmu.gate_map.update(
         2, name="Silk Gold", material="PLA", color="ffd700", temperature=215, spool_id=4
     )
-    mmu.current_filament = 2
+    mmu.loaded_gate = 2
     assert MmuStatus(mmu).get_status(0.0)["active_filament"] == {
         "filament_name": "Silk Gold",
         "material": "PLA",
@@ -473,3 +537,78 @@ def test_mmu_machine_no_selector_mode() -> None:
     mmu.enable_no_selector_mode = True
     unit = MmuMachine(mmu).get_status(0.0)["unit_0"]
     assert unit["selector_type"] == "VirtualSelector"
+
+
+# ---------------------------------------------------------------------------
+# printer.mmu
+# ---------------------------------------------------------------------------
+class FakeObjectPrinter:
+    """A ``printer`` stand-in recording the added objects."""
+
+    def __init__(self) -> None:
+        self.objects = {}
+
+    def add_object(self, name, obj):
+        self.objects[name] = obj
+
+
+def make_printer_mmu(num_tools: int = 5) -> MMU:
+    """Build a bare MMU3 instance that can report the printer.mmu status."""
+    mmu = make_mmu(num_tools)
+    mmu.hh_status = MmuStatus(mmu)
+    mmu.total_stats = OperationStats()
+    return mmu
+
+
+def test_printer_mmu_has_the_happy_hare_fields() -> None:
+    mmu = make_printer_mmu(12)
+    status = mmu.get_status(0.0)
+    hh_status = MmuStatus(mmu).get_status(0.0)
+    for key, value in hh_status.items():
+        assert status[key] == value, key
+
+
+def test_status_reports_the_tip_forming_fields() -> None:
+    # read by Happy Hare's _MMU_FORM_TIP
+    mmu = make_mmu()
+    status = MmuStatus(mmu).get_status(0.0)
+    assert status["runout"] is False
+    assert status["extruder_filament_remaining"] == 0.0
+    mmu.is_handling_runout = True
+    assert MmuStatus(mmu).get_status(0.0)["runout"] is True
+
+
+def test_printer_mmu_has_the_extra_fields() -> None:
+    mmu = make_printer_mmu()
+    mmu.current_gate = 2
+    mmu.loaded_gate = 2
+    mmu.filament_pos = FilamentPos.LOADED
+    status = mmu.get_status(0.0)
+    assert status["is_enabled"] is True
+    assert status["current_gate"] == 2
+    assert status["loaded_gate"] == 2
+    # the pre tool / gate split names, kept for user macros
+    assert status["current_tool"] == 2
+    assert status["current_filament"] == 2
+    assert status["filament_pos"] == FILAMENT_POS_LOADED
+    assert status["filament_pos_name"] == "LOADED"
+    assert status["pending_operation"] is None
+    assert status["total_stats"] == OperationStats().to_dict()
+    assert status["job_stats"] == OperationStats().to_dict()
+    assert status["gate_map"] == mmu.gate_map.to_dict()
+
+
+def test_printer_mmu_reports_the_pending_operation() -> None:
+    mmu = make_printer_mmu()
+    mmu.pending_operation = Operation(OperationKind.LOAD, to_tool=1)
+    status = mmu.get_status(0.0)
+    assert status["pending_operation"] == mmu.pending_operation.describe()
+    assert status["reason_for_pause"] == mmu.pending_operation.describe()
+
+
+def test_register_mmu_panel_adds_only_mmu_machine() -> None:
+    mmu = make_printer_mmu()
+    mmu.printer = FakeObjectPrinter()
+    mmu.register_mmu_panel()
+    assert list(mmu.printer.objects) == ["mmu_machine"]
+    assert isinstance(mmu.printer.objects["mmu_machine"], MmuMachine)

@@ -12,6 +12,9 @@ PURGE_PLATFORM_EXTEND ; be sure the platform is extended
 {if old_filament_temp > 142 && next_extruder < 255}
     M104 S[old_filament_temp]
 {endif}
+; same as MMU_CHANGE_TOOL TOOL=[next_extruder], but the slicer only
+; recognizes a T command as the tool change, with anything else it adds its
+; own T command after this G-code
 T[next_extruder]
 G92 E0
 {if flush_length_1 + flush_length_2 + flush_length_3 + flush_length_4 <= 1}
@@ -50,6 +53,7 @@ G92 E0
     G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
+    G1 E1.5 F1800; un-retract
     PURGE_PLATFORM_EXTEND
 {endif}
 {if flush_length_2 > 1}
@@ -82,6 +86,7 @@ G92 E0
     G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
+    G1 E1.5 F1800; un-retract
     PURGE_PLATFORM_EXTEND
 {endif}
 {if flush_length_3 > 1}
@@ -114,6 +119,7 @@ G92 E0
     G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
+    G1 E1.5 F1800; un-retract
     PURGE_PLATFORM_EXTEND
 {endif}
 {if flush_length_4 > 1}
@@ -146,6 +152,7 @@ G92 E0
     G1 E-1.5 F1800; retract before wiping
     M400
     WIPE_NOZZLE
+    G1 E1.5 F1800; un-retract
     PURGE_PLATFORM_EXTEND
 {endif}
 ; FLUSH_START
@@ -159,7 +166,7 @@ M104 S[new_filament_temp]
 ; FLUSH_END
 M400
 G92 E0
-;G1 E-1.5 F1800
+; G1 E1.5 F1800 ; un-retract
 M400
 G1 Z{max_layer_z + 3.0} F3000
 ;{if layer_z <= (initial_layer_print_height + 0.001)}

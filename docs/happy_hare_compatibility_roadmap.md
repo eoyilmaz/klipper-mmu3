@@ -11,16 +11,17 @@ value versus effort; items inside a phase are independent unless noted.
 
 ## Terminology
 
-Happy Hare separates two ideas that the MMU3 extension currently treats as one:
+Happy Hare separates two ideas, and so does the MMU3 extension since
+[#62](https://github.com/eoyilmaz/klipper-mmu3/issues/62):
 
 | Happy Hare | Meaning | MMU3 today |
 |---|---|---|
 | **tool** | What the slicer / G-code asks for (`T0`…`Tn`, `MMU_CHANGE_TOOL TOOL=`) | `tool` |
-| **gate** | A physical lane of the MMU, where a spool is fed in | `tool` (`current_tool` is the selector position) |
+| **gate** | A physical lane of the MMU, where a spool is fed in | `gate` (`current_gate` is the selector position, `loaded_gate` the gate whose filament is in the path) |
 | **TTG map** | Tool-to-gate mapping, `Tn → gate m` | Fixed identity (`Tn → gate n`) |
 
-As long as the TTG map is the identity, one name is enough. Phase 3 introduces real remapping and
-is where the tool / gate split becomes necessary.
+The TTG map is still the identity, the places that turn a tool into a gate (`cmd_tx`, `cmd_kx`,
+`track_operation`, `MmuStatus.tool()`) are commented, that is where the TTG map goes in.
 
 ## Status Legend
 
@@ -30,10 +31,10 @@ is where the tool / gate split becomes necessary.
 
 ## Phase 0 — Done (#45)
 
-- [x] `mmu` and `mmu_machine` status objects in Happy Hare's shape (`extras/mmu3_hh_compat.py`).
+- [x] `mmu` and `mmu_machine` status objects in Happy Hare's shape (`extras/mmu_hh_compat.py`).
 - [x] Live `action` reporting (Selecting, Loading, Loading Ext, Unloading, Forming Tip, Cutting
   Tip, Heating, Homing, ...).
-- [x] Per-gate filament map persisted with `save_variables` (`extras/mmu3_gate_map.py`,
+- [x] Per-gate filament map persisted with `save_variables` (`extras/mmu_gate_map.py`,
   `MMU_GATE_MAP`).
 - [x] Spoolman `readonly` mode: Moonraker's active spool follows the loaded gate.
 - [x] Happy Hare command names: `MMU_LOAD`, `MMU_UNLOAD`, `MMU_EJECT`, `MMU_HOME`, `MMU_UNLOCK`,
@@ -85,20 +86,24 @@ Small, low-risk items that make the panel and existing commands more complete.
   - `t_macro_color`: the setting sends `MMU_TEST_CONFIG`, now answered with "not supported".
   - `gate_homing_endstop` should be `mmu_gate` (FINDA), and `extruder_homing_endstop` `extruder`
     with a `pre_gears` / `on_gears` switch sensor. The defaults are documented in the README as known
-    differences until [#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71) makes the section
-    `[mmu]`.
+    differences, the section is `[mmu]` since [#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)
+    so they can be reported now.
 - [ ] **Verify Fluidd.** ([#56](https://github.com/eoyilmaz/klipper-mmu3/issues/56)) Only Mainsail
   was tested on hardware. Check that Fluidd's MMU card renders and its buttons send commands we
   handle.
-- [ ] **Remove the deprecated aliases** ([#57](https://github.com/eoyilmaz/klipper-mmu3/issues/57))
-  (`LT`, `UT`, `HOME_MMU`, `UNLOCK_MMU`, `SELECT_TOOL`, `UNSELECT_TOOL`) in a later release, after
-  announcing it in the release notes.
-- [ ] **Rename `[mmu3 MMU3]` to Happy Hare's `[mmu]`.**
-  ([#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)) Rename `extras/mmu3.py` to
-  `extras/mmu.py` and `MMU3` to `MMU`, and make the extension itself the `printer.mmu` object
-  instead of adding a separate `MmuStatus`. Breaking change: a leftover `[mmu3 MMU3]` section must
-  fail with a message explaining the rename, and `install.sh` must remove the old link.
-  Afterwards, report `gate_homing_endstop: mmu_gate` and the `extruder_homing_endstop` matching
+- [x] **Remove the deprecated aliases** ([#57](https://github.com/eoyilmaz/klipper-mmu3/issues/57))
+  (`LT`, `UT`, `HOME_MMU`, `UNLOCK_MMU`, `SELECT_TOOL`, `UNSELECT_TOOL`, `MMU_ENABLE`,
+  `MMU_DISABLE`). Announced in the 1.4.0 release notes, the old names are now unknown commands.
+- [x] **Rename `[mmu3 MMU3]` to Happy Hare's `[mmu]`.**
+  ([#71](https://github.com/eoyilmaz/klipper-mmu3/issues/71)) `extras/mmu3.py` is now
+  `extras/mmu.py` and `MMU3` is `MMU`, the extension itself is the `printer.mmu` object (with the
+  MMU3 specific fields next to Happy Hare's, the MMU3 position name is `filament_pos_name`).
+  The other files dropped the MMU3 name too (`mmu.cfg`, `mmu-12x.cfg`, `mmu_menus.cfg`,
+  `extras/mmu_*.py`, `mmu_*` save variables, with the old `mmu3_*` values still read). Breaking
+  change: `extras/mmu3.py` and `mmu3_menus.cfg` are kept as stubs so an old config stops Klipper
+  with the migration steps, `install.sh` replaces the old `[include mmu3*.cfg]` and refuses to
+  install next to Happy Hare.
+  Still open: report `gate_homing_endstop: mmu_gate` and the `extruder_homing_endstop` matching
   `filament_switch_sensor_position` in `configfile.settings.mmu`, so the panels stop using their
   defaults (see [#55](https://github.com/eoyilmaz/klipper-mmu3/issues/55)).
 
@@ -106,46 +111,102 @@ Small, low-risk items that make the panel and existing commands more complete.
 
 Makes the MMU3 fit into Happy Hare-style print start / end G-code and user macros.
 
-- [ ] **`MMU_PRINT_START` / `MMU_PRINT_END`.**
-  ([#58](https://github.com/eoyilmaz/klipper-mmu3/issues/58)) Reset job stats, check that all gates
-  used by the print are available, and switch `print_state` explicitly instead of only following
-  `print_stats`. Report `print_start_detection`.
-- [ ] **User callback macros.** ([#59](https://github.com/eoyilmaz/klipper-mmu3/issues/59)) Call
+- [x] **`MMU_PRINT_START` / `MMU_PRINT_END`.**
+  ([#58](https://github.com/eoyilmaz/klipper-mmu3/issues/58)) Reset job stats and switch
+  `print_state` explicitly instead of only following `print_stats`. `print_start_detection` (default
+  on) keeps following `print_stats` for start / end G-code that doesn't call them, and is reported.
+  `MMU_PRINT_START` checks the tools the print uses against the gates with the slicer tool map
+  ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)).
+- [x] **User callback macros.** ([#59](https://github.com/eoyilmaz/klipper-mmu3/issues/59)) Call
   optional user macros at fixed points, like Happy Hare's `_MMU_PRE_UNLOAD`, `_MMU_POST_UNLOAD`,
-  `_MMU_PRE_LOAD`, `_MMU_POST_LOAD` and `_MMU_ACTION_CHANGED`. Only call a macro if it exists, so
-  existing setups are unaffected. Check the exact names and parameters against Happy Hare's
-  `mmu_sequence.cfg` before implementing.
-- [ ] **`MMU_FORM_TIP` and `MMU_CUT`.** ([#60](https://github.com/eoyilmaz/klipper-mmu3/issues/60))
+  `_MMU_PRE_LOAD`, `_MMU_POST_LOAD` and `_MMU_ACTION_CHANGED` (with `ACTION` / `OLD_ACTION`). Only
+  call a macro if it exists, so existing setups are unaffected. A failing load / unload macro fails
+  the operation. Still open: `_MMU_POST_FORM_TIP` and a configurable macro name per hook.
+- [x] **`MMU_FORM_TIP` and `MMU_CUT`.** ([#60](https://github.com/eoyilmaz/klipper-mmu3/issues/60))
   Standalone commands for tip forming (ramming) and the in-extruder cut, so they can be tested and
-  tuned outside a tool change. The code paths already exist (`ramming_slicer`,
-  `CUT_FILAMENT_IN_EXTRUDER`).
-- [ ] **Sample slicer G-code in Happy Hare style.**
+  tuned outside a tool change. They run the same step as an eject / unload, need loaded filament and
+  a hot extruder, and leave `filament_pos` at `IN_HOTEND` (or lower if the sensors say so). Breaking
+  change: the `RAMMING_SLICER` and `CUT_FILAMENT_IN_EXTRUDER` macros are renamed to Happy Hare's
+  `_MMU_FORM_TIP` and `_MMU_CUT_TIP`, Klipper stops with the rename steps if a needed one is missing
+  (`_MMU_CUT_TIP` only with the cutter enabled).
+- [x] **`MMU_TEST_FORM_TIP` with a parameterized `_MMU_FORM_TIP`.**
+  ([#89](https://github.com/eoyilmaz/klipper-mmu3/issues/89)) Tune tip forming without editing the
+  macro and restarting Klipper. `_MMU_FORM_TIP` was a fixed list of moves copied from OrcaSlicer's
+  wipe tower G-code (without its X moves, so the speeds were off), it is now Happy Hare's macro with
+  its settings in `_MMU_FORM_TIP_VARS`, tuned for PLA (Happy Hare's defaults in the comments).
+  `MMU_TEST_FORM_TIP` (and its alias `MMU_FORM_TIP`) changes those variables at runtime and forms
+  the tip, with Happy Hare's `SHOW`, `RESET` and `RUN`. `printer.mmu` reports `runout` and
+  `extruder_filament_remaining` for the macro. `EXTRUDER_ONLY` doesn't apply, the MMU3 doesn't move
+  the pulley during tip forming. A filament pushed into the extruder by hand (filament switch sensor
+  without FINDA) is tested without homing or moving the MMU and ejected afterwards
+  (`FINAL_EJECT=1`), as in Happy Hare. `force_form_tip_standalone: True` in `[mmu]` (the default) forms the
+  tip with `_MMU_FORM_TIP` on every unload without a cutter (tool changes too), `False` leaves
+  the ramming to the slicer, as Happy Hare's option.
+- [x] **Sample slicer G-code in Happy Hare style.**
   ([#61](https://github.com/eoyilmaz/klipper-mmu3/issues/61)) Update `sample_configs/` so start /
-  end G-code uses `MMU_PRINT_START`, `MMU_PRINT_END` and `MMU_CHANGE_TOOL`.
+  end G-code uses `MMU_PRINT_START`, `MMU_PRINT_END` and `MMU_MOTORS_OFF`, and the README shows the
+  MMU parts of the slicer G-code with links to the samples. Tool changes stay `T[initial_tool]` /
+  `T[next_extruder]` instead of `MMU_CHANGE_TOOL`: the slicer only recognizes a `T` command as the
+  tool change, otherwise it adds its own after the change filament G-code.
 
 ## Phase 3 — Tool / Gate Split, TTG Map and Endless Spool
 
 The largest change. Needed before any feature where tool `n` is not gate `n`.
 
-- [ ] **Separate tool and gate internally.**
-  ([#62](https://github.com/eoyilmaz/klipper-mmu3/issues/62)) Rename the physical side to `gate`:
-  selector position (`current_tool` → `current_gate`), gate map, FINDA checks, `tool_mapping`. Keep
-  `tool` for what the slicer asks for. Do it as a pure rename first (no behaviour change), with the
-  tests green, before any other Phase 3 item.
-- [ ] **TTG map.** ([#63](https://github.com/eoyilmaz/klipper-mmu3/issues/63)) Persist a `ttg_map`
-  with `save_variables`, report it in `get_status()`, and resolve `Tn` / `MMU_CHANGE_TOOL TOOL=n`
-  through it. Implement `MMU_TTG_MAP` (show / set / reset) and `MMU_REMAP_TTG`. Mainsail's tool
-  mapping dialog then works.
-- [ ] **Endless spool.** ([#64](https://github.com/eoyilmaz/klipper-mmu3/issues/64)) On runout,
-  switch the tool to the next available gate in the same `endless_spool_groups` group and continue
-  printing. Needs reliable runout detection (filament switch sensor, or the motion sensor from Phase
-  1) and the TTG map. Implement `MMU_ENDLESS_SPOOL`.
-- [ ] **Slicer tool map (`MMU_SLICER_TOOL_MAP`).**
-  ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)) Record the tools, colours and
-  materials the print file uses, so the panel can show them and `MMU_PRINT_START` can warn about
-  mismatches with the gate map. Happy Hare fills this from a Moonraker component that scans the
-  G-code file; decide whether to reuse that component or pass the data from the slicer's start
-  G-code.
+- [x] **Separate tool and gate internally.**
+  ([#62](https://github.com/eoyilmaz/klipper-mmu3/issues/62)) Renamed the physical side to `gate`
+  (no behaviour change): `current_tool` → `current_gate`, `current_filament` → `loaded_gate`,
+  `select_tool` / `unselect_tool` / `load_tool` / `unload_tool` → `*_gate`. `Tn`, `Kn`,
+  `MMU_CHANGE_TOOL` and `Operation.from_tool` / `to_tool` (the stats' tool change tally) stay tools.
+  `printer.mmu` reports `current_gate` / `loaded_gate` and still the old `current_tool` /
+  `current_filament`. Config options keep their names (`number_of_tools`, ...), so
+  `MMU_SET_PARAM` still finds them; `PARAM=current_tool` / `current_filament` is now
+  `current_gate` / `loaded_gate`. The gate side LCD menu
+  IDs are renamed (`__select_gate __gate0`, `__unselect_gate`, `__unload`, `__eject`, ...) and the
+  "Unload Tool" button / menu entry is "Unload" (all documented in the README).
+- [x] **TTG map.** ([#63](https://github.com/eoyilmaz/klipper-mmu3/issues/63)) The `ttg_map` is
+  saved with `save_variables` (`mmu_ttg_map`) and reported in `get_status()`. `Tn`, `Kn` and
+  `TOOL=` resolve through it, `GATE=` bypasses it (`GATE=` and `TOOL=` may now differ, `GATE=`
+  wins). `MMU_TTG_MAP` shows the map, `TOOL= GATE=` sets one entry, `MAP=` the whole map,
+  `RESET=1` the identity, `GATE= AVAILABLE=` the gate status; `MMU_REMAP_TTG` is the same command.
+  `MMU_CHANGE_TOOL GATE=` loads the gate as the tool mapped to it, `MMU_RECOVER TOOL= GATE=` remaps
+  the tool like Happy Hare. The panel's `tool`, `last_tool` / `next_tool` and the stats' tool
+  change tally are tools; `Operation` carries both the tools and the gates. The removed
+  `tool_mapping` option (#62) is not revived, the identity is the default map.
+- [x] **Endless spool.** ([#64](https://github.com/eoyilmaz/klipper-mmu3/issues/64)) `MMU_RUNOUT`
+  (called from the filament switch sensor's `runout_gcode`) marks the gate empty and, with endless
+  spool enabled and a print in progress, remaps the loaded tool to the next non-empty gate of its
+  `endless_spool_groups` group (Happy Hare's order: the gates after it, wrapping around), then
+  `PAUSE`, a `Tn` style tool change and `RESUME`. With no gate left, endless spool disabled, no
+  filament loaded, the MMU disabled or filament still in FINDA it runs `PAUSE`, so the
+  `runout_gcode` no longer needs its own. A failed tool change pauses the MMU with the recovery
+  dialog. `MMU_ENDLESS_SPOOL` takes `ENABLE=`, `GROUPS=`, `RESET=1` and `QUIET=1` like Happy Hare,
+  the `endless_spool_enabled` / `endless_spool_groups` `[mmu]` options are the defaults and the
+  changes are saved with `save_variables`. `printer.mmu` reports `endless_spool_groups`,
+  `endless_spool_enabled` and `endless_spool`, so the panel's tool mapping dialog edits the groups.
+  Happy Hare's `endless_spool_on_load` and `endless_spool_eject_gate` are not implemented. The
+  runout detection uses the filament switch sensor, the motion sensor (#54) is not needed. A motion
+  sensor before the switch sensor can call `MMU_RUNOUT` too: with filament in FINDA it is a clog and
+  the print pauses, with FINDA empty the print uses up the rest of the filament until the switch
+  sensor sees the runout, and pauses if the extruder uses more than `runout_tail_length` until then.
+  The optional `_MMU_ENDLESS_SPOOL_PRE_UNLOAD` / `_MMU_ENDLESS_SPOOL_POST_LOAD` callback macros run
+  around the tool change while the print is paused (e.g. to wipe the nozzle).
+- [x] **Slicer tool map (`MMU_SLICER_TOOL_MAP`).**
+  ([#65](https://github.com/eoyilmaz/klipper-mmu3/issues/65)) Records the tools, colours and
+  materials the print uses. Happy Hare fills this from its Moonraker component that scans the
+  G-code file, the MMU3 takes it from the slicer's start G-code instead (Orca Slicer placeholders,
+  one `{if is_extruder_used[n]}MMU_SLICER_TOOL_MAP TOOL=n COLOR=... MATERIAL=...{endif}` line per
+  gate before `MMU_PRINT_START`), so nothing is installed in Moonraker. `MMU_SLICER_TOOL_MAP`
+  takes Happy Hare's `RESET=1`, `INITIAL_TOOL=`, `TOTAL_TOOLCHANGES=`, `TOOL=` with `COLOR=`,
+  `MATERIAL=`, `TEMP=`, `NAME=`, `USED=`, and `DETAIL=1` / `QUIET=1`; without arguments it prints
+  the tools. `printer.mmu.slicer_tool_map` is reported in Happy Hare's shape, Mainsail shows
+  `total_toolchanges` as "Printing (3/12 swaps)". `MMU_PRINT_START` warns (without pausing) when a
+  used tool maps to an empty gate or a gate with a different material (case-insensitive equality,
+  `PLA` doesn't fit a Spoolman `PLA+` spool); the map is cleared when the
+  print job ends. Not implemented: `PURGE_VOLUMES=` (always `[]`), `AUTOMAP=` / `SKIP_AUTOMAP=`.
+  Mainsail's start print dialog reads `referenced_tools` from the file metadata that only Happy
+  Hare's Moonraker component adds, it doesn't show the tools for the MMU3; the tool mapping
+  dialog's "tools in this file" uses Moonraker's own `filament_weights` and works.
 
 ## Phase 4 — Spoolman Push / Pull
 

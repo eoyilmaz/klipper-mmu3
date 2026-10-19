@@ -21,9 +21,9 @@ sys.modules.setdefault(
 )
 
 # Local Imports
-from extras.mmu3 import MMU3, FilamentPos  # noqa: E402
-from extras.mmu3_gate_map import GATE_AVAILABLE, GateMap  # noqa: E402
-from extras.mmu3_hh_compat import (  # noqa: E402
+from extras.mmu import MMU, FilamentPos, SlicerToolMap  # noqa: E402
+from extras.mmu_gate_map import GATE_AVAILABLE, GateMap  # noqa: E402
+from extras.mmu_hh_compat import (  # noqa: E402
     ACTION_IDLE,
     ACTION_LOADING,
     ACTION_LOADING_EXTRUDER,
@@ -60,6 +60,9 @@ class FakePrinter:
         self.webhooks = FakeWebhooks()
 
     def lookup_object(self, name, default=None):
+        if name.startswith("gcode_macro "):
+            # no user macros are defined
+            return default
         assert name == "webhooks"
         return self.webhooks
 
@@ -87,17 +90,22 @@ class FakeGCmd:
         pass
 
 
-def make_mmu(num_tools: int = 5) -> MMU3:
+def make_mmu(num_tools: int = 5) -> MMU:
     """Build a bare MMU3 instance with just what these tests need."""
-    mmu = object.__new__(MMU3)
+    mmu = object.__new__(MMU)
     mmu.printer = FakePrinter()
     mmu.number_of_tools = num_tools
     mmu.gate_map = GateMap(num_tools)
+    mmu.ttg_map = list(range(num_tools))
+    mmu.slicer_tool_map = SlicerToolMap()
+    mmu.endless_spool_enabled = False
+    mmu.endless_spool_groups = list(range(num_tools))
+    mmu.selected_tool = None
     mmu.spoolman_support = SPOOLMAN_READONLY
     mmu._active_spool_id = -1
     mmu._spoolman_error_reported = False
-    mmu.current_tool = None
-    mmu.current_filament = None
+    mmu.current_gate = None
+    mmu.loaded_gate = None
     mmu.filament_pos = FilamentPos.UNLOADED
     mmu.action = ACTION_IDLE
     mmu.messages = []
@@ -109,14 +117,14 @@ def make_mmu(num_tools: int = 5) -> MMU3:
     return mmu
 
 
-def load(mmu: MMU3, gate: int) -> None:
+def load(mmu: MMU, gate: int) -> None:
     """Pretend ``gate`` is fully loaded."""
-    mmu.current_tool = gate
-    mmu.current_filament = gate
+    mmu.current_gate = gate
+    mmu.loaded_gate = gate
     mmu.filament_pos = FilamentPos.LOADED
 
 
-def spool_calls(mmu: MMU3) -> list:
+def spool_calls(mmu: MMU) -> list:
     """Return the spool ids sent to Moonraker, in order."""
     return [
         kwargs["spool_id"]
@@ -151,7 +159,7 @@ def test_sync_clears_spool_on_unload() -> None:
     load(mmu, 1)
     mmu.sync_active_spool()
     mmu.filament_pos = FilamentPos.UNLOADED
-    mmu.current_filament = None
+    mmu.loaded_gate = None
     mmu.sync_active_spool()
     assert spool_calls(mmu) == [7, None]
 
@@ -175,7 +183,7 @@ def test_sync_clears_spool_on_startup_when_nothing_loaded() -> None:
 def test_spool_active_once_filament_reaches_extruder(pos, expected) -> None:
     mmu = make_mmu()
     mmu.gate_map.update(1, spool_id=7)
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
     mmu.filament_pos = pos
     mmu.sync_active_spool()
     assert spool_calls(mmu) == [expected]
@@ -235,7 +243,7 @@ def test_parse_gate_map_fields() -> None:
         AVAILABLE=1,
         SPEED=80,
     )
-    assert MMU3.parse_gate_map_fields(gcmd) == {
+    assert MMU.parse_gate_map_fields(gcmd) == {
         "name": "Bobs PLA",
         "material": "PLA",
         "color": "#ff0000",
@@ -247,20 +255,20 @@ def test_parse_gate_map_fields() -> None:
 
 
 def test_parse_gate_map_fields_only_returns_given_fields() -> None:
-    assert MMU3.parse_gate_map_fields(FakeGCmd(GATE=1, TEMP=240)) == {
+    assert MMU.parse_gate_map_fields(FakeGCmd(GATE=1, TEMP=240)) == {
         "temperature": 240
     }
 
 
 def test_parse_gate_map_available_from_buffer_is_available() -> None:
-    fields = MMU3.parse_gate_map_fields(FakeGCmd(AVAILABLE=2))
+    fields = MMU.parse_gate_map_fields(FakeGCmd(AVAILABLE=2))
     assert fields == {"status": GATE_AVAILABLE}
 
 
 @pytest.mark.parametrize("params", [{"SPEED": 5}, {"AVAILABLE": 3}, {"TEMP": -2}])
 def test_parse_gate_map_fields_rejects_out_of_range(params) -> None:
     with pytest.raises(FakeGCmd.error):
-        MMU3.parse_gate_map_fields(FakeGCmd(**params))
+        MMU.parse_gate_map_fields(FakeGCmd(**params))
 
 
 def test_gate_map_command_updates_saves_and_syncs() -> None:
@@ -270,7 +278,7 @@ def test_gate_map_command_updates_saves_and_syncs() -> None:
     assert mmu.gate_map[1].material == "PETG"
     assert spool_calls(mmu) == [7]
     assert len(mmu.scripts) == 1
-    assert mmu.scripts[0].startswith("SAVE_VARIABLE VARIABLE=mmu3_gate_map VALUE='")
+    assert mmu.scripts[0].startswith("SAVE_VARIABLE VARIABLE=mmu_gate_map VALUE='")
     saved = json.loads(mmu.scripts[0].split("VALUE='", 1)[1][:-1])
     assert saved["1"]["spool_id"] == 7
     assert mmu.messages == []
@@ -307,7 +315,7 @@ def test_gate_map_command_reset() -> None:
 def test_gate_map_command_prints_map() -> None:
     mmu = make_mmu()
     mmu.gate_map.update(1, material="PETG", spool_id=7, status=GATE_AVAILABLE)
-    mmu.current_filament = 1
+    mmu.loaded_gate = 1
     mmu.cmd_mmu_gate_map(FakeGCmd())
     assert "Gate 1: PETG spool=7 [available] <- loaded" in mmu.messages[0]
 
@@ -355,10 +363,10 @@ def test_running_action_restores_on_error() -> None:
     assert mmu.action == ACTION_IDLE
 
 
-def make_planner_mmu(seen: list) -> MMU3:
+def make_planner_mmu(seen: list) -> MMU:
     """Build an MMU3 whose load / unload steps record the reported action."""
     mmu = make_mmu()
-    mmu.current_tool = 1
+    mmu.current_gate = 1
 
     def step(pos: FilamentPos):
         def run() -> bool:
@@ -400,7 +408,7 @@ def test_unload_reports_action_per_step() -> None:
 
 def test_failed_step_restores_idle() -> None:
     mmu = make_mmu()
-    mmu.current_tool = 1
+    mmu.current_gate = 1
     mmu._load_path = lambda: [(FilamentPos.AT_FINDA, lambda: False, ACTION_LOADING)]
     assert mmu._load_toward(FilamentPos.LOADED, 1) is False
     assert mmu.action == ACTION_IDLE
@@ -409,11 +417,11 @@ def test_failed_step_restores_idle() -> None:
 # ---------------------------------------------------------------------------
 # MMU_SELECT
 # ---------------------------------------------------------------------------
-def make_select_mmu() -> MMU3:
-    """Build an MMU3 whose ``cmd_select_tool`` only records the call."""
+def make_select_mmu() -> MMU:
+    """Build an MMU3 whose ``cmd_select_gate`` only records the call."""
     mmu = make_mmu()
     mmu.selected = []
-    mmu.cmd_select_tool = lambda gcmd: mmu.selected.append(gcmd) or True
+    mmu.cmd_select_gate = lambda gcmd: mmu.selected.append(gcmd) or True
     return mmu
 
 
@@ -425,7 +433,7 @@ def test_select_refuses_while_another_gate_is_loaded() -> None:
     assert "unload it" in mmu.messages[0]
 
 
-@pytest.mark.parametrize("params", [{"GATE": 2}, {"VALUE": 2}])
+@pytest.mark.parametrize("params", [{"GATE": 2}, {"TOOL": 2}])
 def test_select_when_unloaded(params) -> None:
     mmu = make_select_mmu()
     assert mmu.cmd_mmu_select(FakeGCmd(**params)) is True
