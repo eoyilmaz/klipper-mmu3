@@ -1,8 +1,6 @@
-; MZ FLOW TEMP END
-
 ; park the nozzle away from the build area
 ; to prevent any problems in MMU_UNLOAD to damage the printed parts.
-G1 X218 Y248 F{travel_speed * 0.5 * 60}
+G1 X214 Y248 F{travel_speed * 0.5 * 60}
 
 ; Unload filament
 MMU_UNLOAD
@@ -13,7 +11,7 @@ WIPE_NOZZLE
 {if max_layer_z < max_print_height}
 G1 Z{z_offset+min(max_layer_z+2, max_print_height)} F600 ; Move print head up
 {endif}
-G1 X218 Y248 F{travel_speed * 0.5 * 60} ; present print
+G1 X214 Y248 F{travel_speed * 0.5 * 60} ; present print
 {if max_layer_z < max_print_height-10}G1 Z{z_offset+min(max_layer_z+5, max_print_height-10)} F600 ; Move print head further up{endif}
 
 SET_SKEW CLEAR=1

@@ -479,6 +479,12 @@ The extension supplies all the necessary gcode commands.
    tool-to-gate map before the tool is needed. When the print job ends, the
    tools are cleared.
 
+   `MMU_PRINT_START` stops the print with an error if the MMU is paused and
+   needs to be unlocked (e.g. after a failed load before the print). Fix the
+   problem, run `MMU_UNLOCK` and start the print again. Without
+   `MMU_PRINT_START` in the start G-code, the first tool change of the print
+   fails and pauses the print instead.
+
    The materials must be the same (ignoring case), so name them the same in
    the slicer's filament "Type" and in Spoolman: `PLA` in the slicer doesn't
    fit a `PLA+` spool (Orca Slicer's "Type" also takes names that aren't in

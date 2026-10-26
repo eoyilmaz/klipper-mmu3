@@ -41,7 +41,7 @@ G28 Z
 ; 3. Get a drift-free Z reference via a tap probe (uses the already-calibrated
 ;    tap_threshold - does NOT re-run guess/refine/verify)
 WIPE_NOZZLE
-G0 Z10 F600                          ; lift clear of the bed before travelling
+G0 Z10 F1200                         ; lift clear of the bed before travelling
 G0 X117.5 Y117.5 F{travel_speed*60}  ; move to the tap position (bed center)
 TAP_Z_CALIBRATE                      ; probes via tap (3 samples, averaged) and corrects Klipper's Z frame (macro in printer.cfg)
 
@@ -52,28 +52,44 @@ SKEW_PROFILE LOAD=Califlower
 
 ; select extruder
 ; sometimes loading the material causes
-; a lot of purge do this around the start of the bed
-G1 Z20 F240
-G1 X218 Y248 F{travel_speed*0.5*60}
+; a lot of purge do this at flush position
+G1 Z10 F1200
+G1 X175 Y248 F15000
+G1 X214
+M400
 
 M109 S{first_layer_temperature[0]} ; wait for nozzle temp to stabilize
 
-PURGE_PLATFORM_EXTEND
-M106 P1 S255
-M106 P2 S255
 T[initial_tool] ; load the first tool, same as MMU_CHANGE_TOOL TOOL=[initial_tool]
 G92 E0
-G0 E10 F3000
+M83
+M400
+PURGE_PLATFORM_EXTEND
+M106 P1 S0
+M106 P2 S0
+G1 E24 F500
+G1 E1 F50
+G1 E9 F500
+M106 P1 S64
+M106 P2 S64
+G1 E30 F500
+M106 P1 S255
+M106 P2 S255
+G92 E0
 PURGE_PLATFORM_RETRACT
+G1 E-1.5 F1800; retract before wiping
+M400
 WIPE_NOZZLE
+G1 E1.5 F1800; un-retract
+M400
 PURGE_PLATFORM_EXTEND
 M106 P1 S0
 M106 P2 S0
 
 ; prime the nozzle
-G1 Z20 F240
+G1 Z10 F1200
 G1 X20 Y2 F3000
-G1 Z{initial_layer_print_height} F240
+G1 Z{initial_layer_print_height} F1200
 G92 E0
 G1 X200 E6.36 F3000
 G1 Y2.4 F5000
@@ -89,9 +105,3 @@ G92 E0
 ; G1 E-1 F3000 ; retract filament
 ; G92 E0
 
-; Go to the filament change point
-G1 Z10 F240 ; lift the print head from the plate
-G1 X212 Y248 F{travel_speed*0.5*60}
-;G1 E1 F3000 ; un-retract filament
-
-; MZ FLOW TEMP START
