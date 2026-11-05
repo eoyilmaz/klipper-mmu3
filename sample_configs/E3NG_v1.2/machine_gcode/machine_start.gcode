@@ -27,26 +27,38 @@ BED_MESH_CLEAR
 
 G90 ; use absolute coordinates
 M83 ; extruder relative mode
-M140 S{first_layer_bed_temperature[0]} ; set final bed temp
 M104 S130; S{first_layer_temperature[0]} ; set final nozzle temp
 M190 S{first_layer_bed_temperature[0]} ; wait for bed temp to stabilize
+M104 S200; S{first_layer_temperature[0]} ; set final nozzle temp
 
 ; 1. Initial Home (Native Eddy handles drift automatically based on its temperature)
 G28 ; home all axis
 
 ; 2. Tram the bed
-Z_TILT_ADJUST ; home and auto align z-axis
+M109 S200
+WIPE_NOZZLE
+M104 S130
+M106 S255 ; full blast fan to help nozzle cool
+TEMPERATURE_WAIT SENSOR=extruder MAXIMUM=135
+M107 ; Fan off
+M109 S130 ; wait until nozzle temperature settles
+G0 Z5 F1200
+G0 X29 Y8 F{travel_speed*60}   ; go to the first z_tilt point
+G4 P1000                       ; let the toolhead settle before the first tap
+Z_TILT_ADJUST METHOD=tap PROBE_SPEED=3 SAMPLES=3 SAMPLES_RESULT=median
 G28 Z
 
 ; 3. Get a drift-free Z reference via a tap probe (uses the already-calibrated
 ;    tap_threshold - does NOT re-run guess/refine/verify)
-WIPE_NOZZLE
 G0 Z10 F1200                         ; lift clear of the bed before travelling
 G0 X117.5 Y117.5 F{travel_speed*60}  ; move to the tap position (bed center)
 TAP_Z_CALIBRATE                      ; probes via tap (3 samples, averaged) and corrects Klipper's Z frame (macro in printer.cfg)
 
-; probe adaptively
-BED_MESH_CALIBRATE METHOD=rapid_scan mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]} ADAPTIVE=0
+; probe adaptively, rapid scans with the eddy and taps the rows in front of
+; its reach (the nozzle is still clean and at 130C from the tap above)
+BED_MESH_HYBRID_CALIBRATE mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]}
+
+M104 S{first_layer_temperature[0]} ; heat the nozzle without waiting it to stabilize
 
 SKEW_PROFILE LOAD=Califlower
 
@@ -58,33 +70,9 @@ G1 X175 Y248 F15000
 G1 X214
 M400
 
-M109 S{first_layer_temperature[0]} ; wait for nozzle temp to stabilize
-
+M109 S{first_layer_temperature[0]} ; heat the nozzle and waiting it to stabilize
 T[initial_tool] ; load the first tool, same as MMU_CHANGE_TOOL TOOL=[initial_tool]
-G92 E0
-M83
-M400
-PURGE_PLATFORM_EXTEND
-M106 P1 S0
-M106 P2 S0
-G1 E24 F500
-G1 E1 F50
-G1 E9 F500
-M106 P1 S64
-M106 P2 S64
-G1 E30 F500
-M106 P1 S255
-M106 P2 S255
-G92 E0
-PURGE_PLATFORM_RETRACT
-G1 E-1.5 F1800; retract before wiping
-M400
-WIPE_NOZZLE
-G1 E1.5 F1800; un-retract
-M400
-PURGE_PLATFORM_EXTEND
-M106 P1 S0
-M106 P2 S0
+FLUSH LENGTH=32 FIRST_SPEED=500 SPEED=500
 
 ; prime the nozzle
 G1 Z10 F1200
@@ -104,4 +92,3 @@ G1 X20 E6.36 F3000 ; prime the nozzle
 G92 E0
 ; G1 E-1 F3000 ; retract filament
 ; G92 E0
-
