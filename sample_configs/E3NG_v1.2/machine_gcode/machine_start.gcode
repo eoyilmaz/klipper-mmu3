@@ -58,6 +58,8 @@ TAP_Z_CALIBRATE                      ; probes via tap (3 samples, averaged) and 
 ; its reach (the nozzle is still clean and at 130C from the tap above)
 BED_MESH_HYBRID_CALIBRATE mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]}
 
+M104 S{first_layer_temperature[0]} ; heat the nozzle without waiting it to stabilize
+
 SKEW_PROFILE LOAD=Califlower
 
 ; select extruder
@@ -68,33 +70,9 @@ G1 X175 Y248 F15000
 G1 X214
 M400
 
-M109 S{first_layer_temperature[0]} ; wait for nozzle temp to stabilize
-
+M109 S{first_layer_temperature[0]} ; heat the nozzle and waiting it to stabilize
 T[initial_tool] ; load the first tool, same as MMU_CHANGE_TOOL TOOL=[initial_tool]
-G92 E0
-M83
-M400
-PURGE_PLATFORM_EXTEND
-M106 P1 S0
-M106 P2 S0
-G1 E24 F500
-G1 E1 F50
-G1 E9 F500
-M106 P1 S64
-M106 P2 S64
-G1 E30 F500
-M106 P1 S255
-M106 P2 S255
-G92 E0
-PURGE_PLATFORM_RETRACT
-G1 E-1.5 F1800; retract before wiping
-M400
-WIPE_NOZZLE
-G1 E1.5 F1800; un-retract
-M400
-PURGE_PLATFORM_EXTEND
-M106 P1 S0
-M106 P2 S0
+FLUSH LENGTH=32 FIRST_SPEED=500 SPEED=500
 
 ; prime the nozzle
 G1 Z10 F1200
@@ -114,4 +92,3 @@ G1 X20 E6.36 F3000 ; prime the nozzle
 G92 E0
 ; G1 E-1 F3000 ; retract filament
 ; G92 E0
-
