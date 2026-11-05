@@ -54,8 +54,9 @@ G0 Z10 F1200                         ; lift clear of the bed before travelling
 G0 X117.5 Y117.5 F{travel_speed*60}  ; move to the tap position (bed center)
 TAP_Z_CALIBRATE                      ; probes via tap (3 samples, averaged) and corrects Klipper's Z frame (macro in printer.cfg)
 
-; probe adaptively
-BED_MESH_CALIBRATE METHOD=rapid_scan mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]} ADAPTIVE=0
+; probe adaptively, rapid scans with the eddy and taps the rows in front of
+; its reach (the nozzle is still clean and at 130C from the tap above)
+BED_MESH_HYBRID_CALIBRATE mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]}
 
 SKEW_PROFILE LOAD=Califlower
 
