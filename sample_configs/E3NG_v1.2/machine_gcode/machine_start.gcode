@@ -29,12 +29,17 @@ G90 ; use absolute coordinates
 M83 ; extruder relative mode
 M104 S130; S{first_layer_temperature[0]} ; set final nozzle temp
 M190 S{first_layer_bed_temperature[0]} ; wait for bed temp to stabilize
-M104 S200; S{first_layer_temperature[0]} ; set final nozzle temp
 
 ; 1. Initial Home (Native Eddy handles drift automatically based on its temperature)
 G28 ; home all axis
 
 ; 2. Tram the bed
+G0 Z5 F1200
+Z_TILT_ADJUST
+G28 Z
+
+; 3. Get a drift-free Z reference via a tap probe (uses the already-calibrated
+;    tap_threshold - does NOT re-run guess/refine/verify)
 M109 S200
 WIPE_NOZZLE
 M104 S130
@@ -42,21 +47,13 @@ M106 S255 ; full blast fan to help nozzle cool
 TEMPERATURE_WAIT SENSOR=extruder MAXIMUM=135
 M107 ; Fan off
 M109 S130 ; wait until nozzle temperature settles
-G0 Z5 F1200
-G0 X29 Y8 F{travel_speed*60}   ; go to the first z_tilt point
-G4 P1000                       ; let the toolhead settle before the first tap
-Z_TILT_ADJUST METHOD=tap PROBE_SPEED=3 SAMPLES=3 SAMPLES_RESULT=median
-G28 Z
 
-; 3. Get a drift-free Z reference via a tap probe (uses the already-calibrated
-;    tap_threshold - does NOT re-run guess/refine/verify)
 G0 Z10 F1200                         ; lift clear of the bed before travelling
 G0 X117.5 Y117.5 F{travel_speed*60}  ; move to the tap position (bed center)
 TAP_Z_CALIBRATE                      ; probes via tap (3 samples, averaged) and corrects Klipper's Z frame (macro in printer.cfg)
 
-; probe adaptively, rapid scans with the eddy and taps the rows in front of
-; its reach (the nozzle is still clean and at 130C from the tap above)
-BED_MESH_HYBRID_CALIBRATE mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]}
+; probe adaptively, rapid scans with the eddy
+BED_MESH_CALIBRATE mesh_min={adaptive_bed_mesh_min[0]},{adaptive_bed_mesh_min[1]} mesh_max={adaptive_bed_mesh_max[0]},{adaptive_bed_mesh_max[1]} ALGORITHM=[bed_mesh_algo] METHOD=rapid_scan PROBE_COUNT={bed_mesh_probe_count[0]},{bed_mesh_probe_count[1]}
 
 M104 S{first_layer_temperature[0]} ; heat the nozzle without waiting it to stabilize
 
